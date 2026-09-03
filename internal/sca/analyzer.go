@@ -180,6 +180,7 @@ func vulnToFinding(vuln osvclient.Vulnerability, dep analysis.Dependency) analys
 		AdvisoryURL:    advisoryURL,
 		Evidence:       evidence,
 		Recommendation: recommendation,
+		RuleID:         scaRuleID(vuln, cveID),
 		DetectedAt:     time.Now(),
 	}
 }
@@ -219,4 +220,28 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-1] + "…"
+}
+
+// scaRuleID generates a deterministic rule ID for an SCA finding. This
+// enables suppression, mode overrides, and cross-scan tracking. The ID
+// prefers CVE IDs, falls back to GHSA IDs, then OSV IDs.
+//
+// Format: OSV-CVE-2024-12345, OSV-GHSA-xxxx, or OSV-VULN-xxxx.
+func scaRuleID(vuln osvclient.Vulnerability, cveID string) string {
+	if cveID != "" {
+		return "OSV-" + cveID
+	}
+	// Check aliases for a GHSA or CVE
+	for _, alias := range vuln.Aliases {
+		if strings.HasPrefix(alias, "CVE-") {
+			return "OSV-" + alias
+		}
+	}
+	for _, alias := range vuln.Aliases {
+		if strings.HasPrefix(alias, "GHSA-") {
+			return "OSV-" + alias
+		}
+	}
+	// Fall back to the OSV vulnerability ID
+	return "OSV-" + vuln.ID
 }

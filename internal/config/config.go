@@ -18,6 +18,13 @@ type Config struct {
 
 // GetConfigDir returns the PatchFlow configuration directory.
 func GetConfigDir() string {
+	// Honour HOME explicitly on every platform. os.UserHomeDir uses
+	// USERPROFILE on Windows, which makes CLI invocations and tests that
+	// intentionally override HOME read configuration from the wrong account.
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".patchflow")
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."

@@ -58,6 +58,28 @@ func TestNewRepositoryNonGitRepo(t *testing.T) {
 	}
 }
 
+func TestNewRepositoryDoesNotTreatFailedRemoteLookupAsURL(t *testing.T) {
+	mock := &MockExecutor{
+		Responses: map[string]string{
+			"rev-parse --show-toplevel":   "/tmp/repo",
+			"rev-parse --abbrev-ref HEAD": "main",
+			"rev-parse HEAD":              "abc123def456",
+			"remote get-url origin":       "error: No such remote 'origin'\n",
+		},
+		Errors: map[string]error{
+			"remote get-url origin": errors.New("exit status 2"),
+		},
+	}
+
+	repo, err := NewRepository(mock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.RemoteURL != "" {
+		t.Fatalf("expected no remote URL after failed lookup, got %q", repo.RemoteURL)
+	}
+}
+
 func TestDetectOrLocalNonGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	original, err := os.Getwd()
@@ -367,12 +389,12 @@ func TestChangedFilesSinceWithMock(t *testing.T) {
 
 	mock := &MockExecutor{
 		Responses: map[string]string{
-			"rev-parse --show-toplevel":             dir,
-			"rev-parse --abbrev-ref HEAD":           "feature",
-			"rev-parse HEAD":                        "abc123",
-			"remote get-url origin":                 "",
-			"rev-parse --verify main":               "main-sha\n",
-			"diff --name-only main...HEAD":          "app/main.go\nlib/util.py\ndeleted.go\nnode_modules/x.js\nbig.bin\n",
+			"rev-parse --show-toplevel":    dir,
+			"rev-parse --abbrev-ref HEAD":  "feature",
+			"rev-parse HEAD":               "abc123",
+			"remote get-url origin":        "",
+			"rev-parse --verify main":      "main-sha\n",
+			"diff --name-only main...HEAD": "app/main.go\nlib/util.py\ndeleted.go\nnode_modules/x.js\nbig.bin\n",
 		},
 	}
 	repo, err := NewRepository(mock)
@@ -400,7 +422,7 @@ func TestChangedFilesSinceMissingRef(t *testing.T) {
 	dir := t.TempDir()
 	mock := &MockExecutor{
 		Responses: map[string]string{
-			"rev-parse --show-toplevel": dir,
+			"rev-parse --show-toplevel":   dir,
 			"rev-parse --abbrev-ref HEAD": "feature",
 			"rev-parse HEAD":              "abc123",
 			"remote get-url origin":       "",

@@ -1,0 +1,79 @@
+name: Bug report
+description: Report reproducible incorrect behavior, a crash, or an installation failure.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Do not include vulnerabilities, credentials, tokens, private source, or customer data. Security reports belong in the private advisory form.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and did not find this bug.
+          required: true
+        - label: This report does not contain a security vulnerability or sensitive data.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: PatchFlow version
+      description: Paste the output of `patchflow version`.
+      placeholder: patchflow v0.1.6 ...
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - Release binary or install script
+        - Homebrew
+        - Scoop
+        - Container
+        - go install
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, architecture, and relevant shell.
+      placeholder: Ubuntu 24.04, amd64, bash
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide exact redacted commands and the smallest public fixture or repository that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted diagnostics
+      description: Include relevant output only after removing tokens, credentials, source, private paths, and personal data.
+      render: text
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression information
+      description: If known, identify the last working version or commit.

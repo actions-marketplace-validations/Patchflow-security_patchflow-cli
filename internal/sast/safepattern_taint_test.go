@@ -159,3 +159,80 @@ func TestSafePatternMatchesInRange(t *testing.T) {
 		t.Error("expected match in range 1-5 (includes line 2)")
 	}
 }
+
+// TestSuppressTaintWithSafePatterns_InterproceduralIPSuffix verifies that safe
+// patterns registered against a base rule ID (e.g., PF-FASTAPI-SQLI-002) also
+// suppress interprocedural variants whose rule ID carries the "-IP" suffix
+// (e.g., PF-FASTAPI-SQLI-002-IP). This is the real-world scenario from
+// Safe-pip-backend where ORM `select(Model).where(Model.col == value)` produced
+// PF-FASTAPI-SQLI-002-IP false positives that a `select(` safe pattern should
+// have suppressed but didn't, because the map lookup used the suffixed ID.
+func TestSuppressTaintWithSafePatterns_InterproceduralIPSuffix(t *testing.T) {
+	dir := t.TempDir()
+	// Python fixture: a function that uses parameterized SQLAlchemy ORM select()
+	// — textbook-safe — but the taint engine flagged it as PF-FASTAPI-SQLI-002-IP.
+	src := `async def get_review(db, repo, pr_number, head_sha):
+    stmt = select(PrReview).where(
+        PrReview.repository == repo,
+        PrReview.pr_number == pr_number,
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+`
+	path := filepath.Join(dir, "pr_reviews.py")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Finding carries the -IP suffix (interprocedural variant).
+	findings := []analysis.Finding{
+		{RuleID: "PF-FASTAPI-SQLI-002-IP", Analyzer: "taint-patterns", FilePath: path, LineStart: 6},
+	}
+
+	// Safe pattern registered against the BASE rule ID (no -IP suffix).
+	// select( is the ORM parameterization marker.
+	safePatterns := map[string][]fwpatterns.SafePattern{
+		"PF-FASTAPI-SQLI-002": {
+			{Regex: regexp.MustCompile(`select\(`), Reason: "SQLAlchemy ORM select() parameterizes comparisons"},
+		},
+	}
+
+	result := suppressTaintWithSafePatterns(findings, safePatterns, dir)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 findings (IP variant suppressed by base-ID safe pattern), got %d: %+v", len(result), result)
+	}
+}
+
+// TestSuppressTaintWithSafePatterns_IPVariantKeepsWhenNoSafePattern confirms
+// that -IP findings are still reported when no safe pattern matches — the fix
+// only changes the lookup key, not the suppression logic.
+func TestSuppressTaintWithSafePatterns_IPVariantKeepsWhenNoSafePattern(t *testing.T) {
+	dir := t.TempDir()
+	src := `async def get_review(db, user_input):
+    await db.execute(text(f"SELECT * FROM t WHERE x = '{user_input}'"))
+    return None
+`
+	path := filepath.Join(dir, "unsafe.py")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := []analysis.Finding{
+		{RuleID: "PF-FASTAPI-SQLI-002-IP", Analyzer: "taint-patterns", FilePath: path, LineStart: 2},
+	}
+
+	// Safe pattern that does NOT match this function.
+	safePatterns := map[string][]fwpatterns.SafePattern{
+		"PF-FASTAPI-SQLI-002": {
+			{Regex: regexp.MustCompile(`select\(`), Reason: "ORM parameterization"},
+		},
+	}
+
+	result := suppressTaintWithSafePatterns(findings, safePatterns, dir)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 finding (no safe pattern match, IP variant kept), got %d", len(result))
+	}
+	if result[0].RuleID != "PF-FASTAPI-SQLI-002-IP" {
+		t.Errorf("expected PF-FASTAPI-SQLI-002-IP, got %s", result[0].RuleID)
+	}
+}

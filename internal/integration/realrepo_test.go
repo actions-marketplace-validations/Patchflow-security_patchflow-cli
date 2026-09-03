@@ -4,24 +4,36 @@
 // full PatchFlow SBOM/VEX/license/dep-graph pipeline against them, and
 // verify that the output is valid and contains expected data.
 //
-// Tests are skipped in -short mode to avoid network access in CI.
+// Tests are opt-in because they depend on external repositories or large local
+// benchmark fixtures. Set PATCHFLOW_REAL_REPO_TESTS=1 to run them.
 package integration
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// TestRealReposEnabled controls whether real-repo tests run.
-// These tests require network access to clone repos from GitHub.
+const (
+	realRepoCloneTimeout = 90 * time.Second
+	realRepoScanTimeout  = 2 * time.Minute
+)
+
+// skipIfShort keeps external and benchmark-repository tests out of the
+// deterministic default suite. These tests require network access or large
+// fixtures and must be requested explicitly.
 func skipIfShort(t *testing.T) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping real-repo test in -short mode")
+	}
+	if os.Getenv("PATCHFLOW_REAL_REPO_TESTS") != "1" {
+		t.Skip("set PATCHFLOW_REAL_REPO_TESTS=1 to run real-repo integration tests")
 	}
 	// Check if git is available
 	if _, err := exec.LookPath("git"); err != nil {
@@ -33,10 +45,15 @@ func skipIfShort(t *testing.T) {
 func cloneRepo(t *testing.T, url, name string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), name)
-	cmd := exec.Command("git", "clone", "--depth", "1", url, dir)
+	ctx, cancel := context.WithTimeout(context.Background(), realRepoCloneTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", url, dir)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Skipf("clone of %s exceeded %s", name, realRepoCloneTimeout)
+		}
 		t.Skipf("failed to clone %s: %v (network issue?)", name, err)
 	}
 	return dir
@@ -46,24 +63,22 @@ func cloneRepo(t *testing.T, url, name string) string {
 // It builds the patchflow binary first, then runs it.
 func runPatchflowExport(t *testing.T, repoDir, format string, extraArgs ...string) []byte {
 	t.Helper()
-	// Build patchflow binary
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "patchflow")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = "/Users/digitalcenter/patchflow-cli"
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("failed to build patchflow: %v\n%s", err, out)
-	}
+	binPath := buildPatchflowBinary(t)
 
 	// Run scan export
-	outputFile := filepath.Join(binDir, "output")
+	outputFile := filepath.Join(t.TempDir(), "output")
 	args := []string{"scan", "export", "--format", format, "--output", outputFile}
 	args = append(args, extraArgs...)
-	cmd := exec.Command(binPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), realRepoScanTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = repoDir
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("patchflow scan export --format %s exceeded %s", format, realRepoScanTimeout)
+		}
 		t.Fatalf("patchflow scan export --format %s failed: %v", format, err)
 	}
 
@@ -77,18 +92,16 @@ func runPatchflowExport(t *testing.T, repoDir, format string, extraArgs ...strin
 // runPatchflowDepsLicenses runs patchflow deps licenses on a repo.
 func runPatchflowDepsLicenses(t *testing.T, repoDir string) string {
 	t.Helper()
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "patchflow")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = "/Users/digitalcenter/patchflow-cli"
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("failed to build patchflow: %v\n%s", err, out)
-	}
-
-	cmd := exec.Command(binPath, "deps", "licenses")
+	binPath := buildPatchflowBinary(t)
+	ctx, cancel := context.WithTimeout(context.Background(), realRepoScanTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "deps", "licenses")
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("patchflow deps licenses exceeded %s", realRepoScanTimeout)
+		}
 		t.Fatalf("patchflow deps licenses failed: %v\n%s", err, out)
 	}
 	return string(out)
@@ -686,7 +699,7 @@ func TestRealReposCycloneDXConsistency(t *testing.T) {
 // --- Taint-rule integration tests (all languages) ---
 //
 // These tests use pre-cloned repos from the patchflow-benchmarks project.
-// No network access required — repos are at /Users/digitalcenter/patchflow-benchmarks/.bench-work/
+// No network access is required, but the fixtures are large and remain opt-in.
 
 // benchmarkReposDir is the path to pre-cloned benchmark repos.
 const benchmarkReposDir = "/Users/digitalcenter/patchflow-benchmarks/.bench-work"
@@ -706,18 +719,16 @@ func localRepo(t *testing.T, name string) string {
 // --json --quiet` in repoDir. It returns the parsed JSON output.
 func runPatchflowScanRun(t *testing.T, repoDir string) map[string]interface{} {
 	t.Helper()
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "patchflow")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = "/Users/digitalcenter/patchflow-cli"
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("failed to build patchflow: %v\n%s", err, out)
-	}
-
-	cmd := exec.Command(binPath, "scan", "run", "--json", "--quiet", "--offline")
+	binPath := buildPatchflowBinary(t)
+	ctx, cancel := context.WithTimeout(context.Background(), realRepoScanTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "scan", "run", "--json", "--quiet", "--offline")
 	cmd.Dir = repoDir
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("patchflow scan run exceeded %s", realRepoScanTimeout)
+		}
 		// Some exit codes are non-zero when findings are present; capture stderr.
 		t.Logf("patchflow scan run exited with error: %v", err)
 	}

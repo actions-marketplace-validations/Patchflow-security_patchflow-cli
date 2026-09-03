@@ -9,9 +9,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Patchflow-security/patchflow-cli/internal/analysis"
+	"github.com/Patchflow-security/patchflow-cli/internal/exitcode"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
+
+func TestDetermineScanExit(t *testing.T) {
+	findings := []analysis.Finding{
+		{Severity: analysis.SeverityHigh, Blocking: false},
+		{Severity: analysis.SeverityLow, Blocking: true},
+	}
+
+	for _, tc := range []struct {
+		name   string
+		input  []analysis.Finding
+		failOn string
+		code   int
+	}{
+		{name: "clean", code: exitcode.Success},
+		{name: "explicit threshold", input: findings, failOn: "high", code: exitcode.FindingsFound},
+		{name: "threshold above findings", input: findings[1:], failOn: "high", code: exitcode.Success},
+		{name: "rule mode blocking", input: findings, code: exitcode.FindingsFound},
+		{name: "informational findings", input: findings[:1], code: exitcode.Success},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, message := determineScanExit(tc.input, tc.failOn)
+			if got != tc.code {
+				t.Fatalf("determineScanExit() code = %d, want %d", got, tc.code)
+			}
+			if (got == exitcode.Success) != (message == "") {
+				t.Fatalf("determineScanExit() message = %q for code %d", message, got)
+			}
+		})
+	}
+}
 
 // chdirTemp changes the working directory to dir and registers cleanup to
 // restore the original directory. The scan run command uses git.DetectOrLocal
@@ -196,4 +228,161 @@ func mapKeys(m map[string]json.RawMessage) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// TestScanRun_WithCustomRulesConfig verifies that `scan run --config` works
+// end-to-end with a .patchflow/rules.yaml containing custom pattern rules
+// (under the `rules:` key as a list), framework extensions, and framework
+// selection. This is the exact scenario that was broken by the unified-config
+// schema conflict (B11.5.4): rulesconfig.Config read `rules:` as a map while
+// customrules.RuleFile read it as a list, causing a "cannot unmarshal !!seq
+// into map[string]Mode" crash. This test prevents that class of regression.
+func TestScanRun_WithCustomRulesConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// A vulnerable Python file that should trigger both an embedded rule
+	// (eval) and our custom rule (hardcoded secret).
+	pythonSrc := `import os
+SECRET_KEY = "supersecretkey123456789"
+user_input = input()
+eval(user_input)
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "app.py"), []byte(pythonSrc), 0644); err != nil {
+		t.Fatalf("write app.py: %v", err)
+	}
+
+	// .patchflow/rules.yaml with custom rules (list under `rules:`) + framework
+	// extensions. This is the documented unified-config format.
+	rulesYAML := `schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: []
+  disabled: []
+
+framework_extensions:
+  fastapi:
+    custom_sanitizers:
+      - function: "sanitize_input"
+    safe_patterns:
+      - pattern: "select\\("
+        reason: "ORM parameterization"
+
+rules:
+  - id: TEST-001
+    title: Hardcoded SECRET_KEY in source
+    pattern: "SECRET_KEY\\s*=\\s*['\"][^'\"]{16,}['\"]"
+    severity: critical
+    languages: [python]
+    confidence: high
+    cwe: "CWE-798"
+    fix_hint: "Load secrets from env vars"
+`
+	patchflowDir := filepath.Join(tmpDir, ".patchflow")
+	if err := os.MkdirAll(patchflowDir, 0755); err != nil {
+		t.Fatalf("mkdir .patchflow: %v", err)
+	}
+	rulesPath := filepath.Join(patchflowDir, "rules.yaml")
+	if err := os.WriteFile(rulesPath, []byte(rulesYAML), 0644); err != nil {
+		t.Fatalf("write rules.yaml: %v", err)
+	}
+
+	chdirTemp(t, tmpDir)
+
+	// Run scan with --config pointing at our rules file. The key assertion is
+	// that this does NOT crash with a YAML unmarshal error.
+	out := runRootCommand(t, []string{
+		"scan", "run",
+		"--config", rulesPath,
+		"--json", "--quiet",
+		"--no-reachability", "--offline", "--no-licenses",
+	})
+
+	// Parse JSON output
+	var result map[string]json.RawMessage
+	if perr := json.Unmarshal([]byte(out), &result); perr != nil {
+		t.Fatalf("stdout is not valid JSON (config crash?): %v\noutput:\n%s", perr, out)
+	}
+
+	analysisRaw, ok := result["analysis"]
+	if !ok {
+		t.Fatalf("expected 'analysis' key, got keys: %v\noutput:\n%s", mapKeys(result), out)
+	}
+
+	var analysis struct {
+		Findings []struct {
+			RuleID   string `json:"rule_id"`
+			Severity string `json:"severity"`
+			Title    string `json:"title"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(analysisRaw, &analysis); err != nil {
+		t.Fatalf("failed to parse analysis: %v", err)
+	}
+
+	// Assert our custom rule (TEST-001) fired.
+	foundCustom := false
+	for _, f := range analysis.Findings {
+		if f.RuleID == "TEST-001" {
+			foundCustom = true
+			if f.Severity != "critical" {
+				t.Errorf("custom rule TEST-001: expected severity critical, got %s", f.Severity)
+			}
+		}
+	}
+	if !foundCustom {
+		t.Errorf("expected custom rule TEST-001 to fire, but it did not. Findings: %+v", analysis.Findings)
+	}
+
+	t.Logf("scan with --config produced %d findings (custom rule TEST-001 fired: %v)", len(analysis.Findings), foundCustom)
+}
+
+// TestScanRun_WithModeOverrideConfig verifies that `scan run --config` also
+// works when `rules:` is a map of rule-id -> mode (the mode-override schema).
+// This confirms both schemas (list and map) work with the unified --config flag.
+func TestScanRun_WithModeOverrideConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// A vulnerable Python file.
+	pythonSrc := "import os\nuser_input = input()\neval(user_input)\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "vuln.py"), []byte(pythonSrc), 0644); err != nil {
+		t.Fatalf("write vuln.py: %v", err)
+	}
+
+	// rules.yaml with `rules:` as a MAP (mode overrides). This is the
+	// mode-override schema. The scan should not crash and modes should apply.
+	rulesYAML := `schema_version: "1.0"
+frameworks:
+  auto_detect: true
+
+rules:
+  TEST-OFF: off
+  TEST-INFORM: inform
+`
+	patchflowDir := filepath.Join(tmpDir, ".patchflow")
+	if err := os.MkdirAll(patchflowDir, 0755); err != nil {
+		t.Fatalf("mkdir .patchflow: %v", err)
+	}
+	rulesPath := filepath.Join(patchflowDir, "rules.yaml")
+	if err := os.WriteFile(rulesPath, []byte(rulesYAML), 0644); err != nil {
+		t.Fatalf("write rules.yaml: %v", err)
+	}
+
+	chdirTemp(t, tmpDir)
+
+	out := runRootCommand(t, []string{
+		"scan", "run",
+		"--config", rulesPath,
+		"--json", "--quiet",
+		"--no-reachability", "--offline", "--no-licenses",
+	})
+
+	// The key assertion: valid JSON output (no crash).
+	var result map[string]json.RawMessage
+	if perr := json.Unmarshal([]byte(out), &result); perr != nil {
+		t.Fatalf("stdout is not valid JSON (mode-map config crash?): %v\noutput:\n%s", perr, out)
+	}
+	if _, ok := result["analysis"]; !ok {
+		t.Fatalf("expected 'analysis' key, got keys: %v", mapKeys(result))
+	}
+	t.Logf("scan with mode-override config produced valid JSON")
 }

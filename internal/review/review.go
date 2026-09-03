@@ -68,6 +68,7 @@ func DetectManifests(root string) []string {
 		name := filepath.Base(entry)
 		if isManifestName(name) {
 			rel, _ := filepath.Rel(root, entry)
+			rel = filepath.ToSlash(rel)
 			if rel != "" && !seen[rel] {
 				seen[rel] = true
 			}

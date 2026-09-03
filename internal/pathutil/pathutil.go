@@ -62,7 +62,7 @@ func ValidateOutputPath(baseDir, path string) error {
 	}
 
 	if !strings.HasPrefix(resolved+string(filepath.Separator), absBase+string(filepath.Separator)) && resolved != absBase {
-		return fmt.Errorf("output path resolves outside project directory: %s -> %s", path, resolved)
+		return fmt.Errorf("output path resolves outside project directory: %s -> %s — write inside the project root (e.g., .patchflow/report.json) or use --no-gitignore to allow arbitrary paths", path, resolved)
 	}
 
 	return nil

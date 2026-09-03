@@ -1,0 +1,42 @@
+name: Community question
+description: Ask for non-sensitive help with installation, configuration, usage, or contribution.
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I checked README.md, SUPPORT.md, and the command documentation.
+          required: true
+        - label: This question contains no vulnerability details, secrets, tokens, private source, or personal data.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: PatchFlow version
+      placeholder: Output of patchflow version, or not installed yet
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and installation method
+      placeholder: macOS arm64 / Homebrew
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include redacted commands and output.
+    validations:
+      required: true

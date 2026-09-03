@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Patchflow-security/patchflow-cli/internal/analysis"
+	"github.com/Patchflow-security/patchflow-cli/internal/api"
 	"github.com/Patchflow-security/patchflow-cli/internal/fix"
 	"github.com/Patchflow-security/patchflow-cli/internal/git"
 	"github.com/Patchflow-security/patchflow-cli/internal/output"
@@ -33,6 +35,13 @@ var (
 	prReviewSuggestReviewers bool
 	prReviewAnnotations      bool
 	prReviewSuggestFixes     bool
+	prReviewSubmit           bool
+	prReviewProjectID        int
+	prReviewRepository       string
+	prReviewPRNumber         int
+	prReviewPRTitle          string
+	prReviewPRAuthor         string
+	prReviewPRURL            string
 )
 
 var prReviewCmd = &cobra.Command{
@@ -62,6 +71,13 @@ func init() {
 	prReviewCmd.Flags().BoolVar(&prReviewSuggestReviewers, "suggest-reviewers", false, "Suggest reviewers based on CODEOWNERS and git blame")
 	prReviewCmd.Flags().BoolVar(&prReviewAnnotations, "annotations", false, "Generate inline code annotations for the PR diff")
 	prReviewCmd.Flags().BoolVar(&prReviewSuggestFixes, "suggest-fixes", false, "Generate safe fix proposals for detected vulnerabilities")
+	prReviewCmd.Flags().BoolVar(&prReviewSubmit, "submit", false, "Submit PR review results to the PatchFlow backend (requires authentication)")
+	prReviewCmd.Flags().IntVar(&prReviewProjectID, "project-id", 0, "Project ID for backend submission (required with --submit)")
+	prReviewCmd.Flags().StringVar(&prReviewRepository, "repository", "", "Repository full name (owner/repo) for backend submission")
+	prReviewCmd.Flags().IntVar(&prReviewPRNumber, "pr-number", 0, "PR number for backend submission")
+	prReviewCmd.Flags().StringVar(&prReviewPRTitle, "pr-title", "", "PR title for backend submission")
+	prReviewCmd.Flags().StringVar(&prReviewPRAuthor, "pr-author", "", "PR author for backend submission")
+	prReviewCmd.Flags().StringVar(&prReviewPRURL, "pr-url", "", "PR URL for backend submission")
 
 	rootCmd.AddCommand(prReviewCmd)
 }
@@ -295,6 +311,15 @@ func runPRReview(cmd *cobra.Command, _ []string) error {
 	}
 
 	if output.IsJSON(formatter) {
+		// Submit to backend if --submit is set.
+		if prReviewSubmit {
+			if err := submitPRReviewToBackend(cmd, ctx, result); err != nil {
+				if !output.IsJSON(formatter) {
+					_ = formatter.PrintError(fmt.Errorf("backend submission failed: %w", err))
+				}
+			}
+		}
+
 		return formatter.Print(struct {
 			*analysis.AnalysisResult `json:"analysis"`
 			Risk                     *risk.ScoreOutput `json:"risk"`
@@ -302,6 +327,13 @@ func runPRReview(cmd *cobra.Command, _ []string) error {
 			AnalysisResult: result,
 			Risk:           &riskScore,
 		})
+	}
+
+	// Submit to backend if --submit is set (non-JSON mode).
+	if prReviewSubmit {
+		if err := submitPRReviewToBackend(cmd, ctx, result); err != nil {
+			_ = formatter.PrintError(fmt.Errorf("backend submission failed: %w", err))
+		}
 	}
 
 	// Terminal output
@@ -459,5 +491,74 @@ func runPRReview(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	return nil
+}
+
+// submitPRReviewToBackend posts the pr-review result JSON to the backend's
+// POST /api/v1/cli/pr-review-results endpoint. Requires authentication
+// (patchflow login), --project-id, --repository, and --pr-number.
+func submitPRReviewToBackend(cmd *cobra.Command, ctx context.Context, result *analysis.AnalysisResult) error {
+	if prReviewProjectID == 0 {
+		return fmt.Errorf("--project-id is required when using --submit")
+	}
+	if prReviewRepository == "" {
+		return fmt.Errorf("--repository is required when using --submit")
+	}
+	if prReviewPRNumber == 0 {
+		return fmt.Errorf("--pr-number is required when using --submit")
+	}
+
+	token, err := requireAuthToken(cmd)
+	if err != nil {
+		return err
+	}
+
+	cfg := ConfigFromContext(ctx)
+	if cfg == nil || cfg.APIURL == "" {
+		return fmt.Errorf("no API URL configured. Set --api-url or run 'patchflow config set apiurl <url>'")
+	}
+
+	// Build the pr-review result payload (findings + annotations + summary).
+	// The backend expects a CLIPRReviewResult-compatible JSON object.
+	payload := struct {
+		Base              string                   `json:"base"`
+		Head              string                   `json:"head"`
+		Findings          []analysis.Finding       `json:"findings"`
+		Annotations       []map[string]interface{} `json:"annotations"`
+		PRSummary         string                   `json:"pr_summary,omitempty"`
+		SuggestedReviewers []string                `json:"suggested_reviewers,omitempty"`
+		RiskScore         int                      `json:"risk_score"`
+		RiskLevel         string                   `json:"risk_level"`
+		FilesChanged      int                      `json:"files_changed"`
+		Version           string                   `json:"version,omitempty"`
+	}{
+		Base:         result.BaseBranch,
+		Head:         result.CommitSHA,
+		Findings:     result.Findings,
+		RiskScore:    result.RiskScore,
+		RiskLevel:    result.RiskLevel,
+		FilesChanged: result.FilesChanged,
+		Version:      versionString(),
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal pr-review result: %w", err)
+	}
+
+	client := api.NewClient(cfg.APIURL, token)
+	resp, err := client.PostPRReviewResults(ctx, body, api.PRReviewSubmitOpts{
+		ProjectID:  prReviewProjectID,
+		Repository: prReviewRepository,
+		PRNumber:   prReviewPRNumber,
+		PRTitle:    prReviewPRTitle,
+		PRAuthor:   prReviewPRAuthor,
+		PRURL:      prReviewPRURL,
+	})
+	if err != nil {
+		return fmt.Errorf("backend rejected pr-review results: %w", err)
+	}
+
+	_ = resp // PRReviewID available if needed for logging
 	return nil
 }

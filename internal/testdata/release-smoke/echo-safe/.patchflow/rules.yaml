@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [echo]
+  disabled: []
+
+framework_extensions:
+  echo:
+    safe_patterns:
+      - pattern: "db\\.Query\\(.*,.*\\)|db\\.Exec\\(.*,.*\\)|db\\.QueryRow\\(.*,.*\\)"
+        reason: "Parameterized query with placeholder arguments — taint through bound args is safe"
+
+rules: []

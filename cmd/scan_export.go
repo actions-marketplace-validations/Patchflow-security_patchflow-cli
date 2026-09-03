@@ -8,6 +8,7 @@ import (
 
 	"github.com/Patchflow-security/patchflow-cli/internal/analysis"
 	"github.com/Patchflow-security/patchflow-cli/internal/git"
+	"github.com/Patchflow-security/patchflow-cli/internal/output"
 	"github.com/Patchflow-security/patchflow-cli/internal/reachability"
 	"github.com/Patchflow-security/patchflow-cli/internal/report"
 	"github.com/Patchflow-security/patchflow-cli/internal/risk"
@@ -44,11 +45,21 @@ func runScanExport(cmd *cobra.Command, _ []string) error {
 	formatter := FormatterFromContext(cmd.Context())
 	ctx := cmd.Context()
 
-	// Validate format
+	// Validate format. "sbom" is accepted as an alias for "cyclonedx-json".
+	if format == "sbom" {
+		format = "cyclonedx-json"
+	}
+	// Normalize common aliases.
+	switch format {
+	case "cyclonedx", "cdx":
+		format = "cyclonedx-json"
+	case "spdx":
+		format = "spdx-json"
+	}
 	switch format {
 	case "json", "sarif", "cyclonedx-json", "spdx-json", "vex-json", "dep-tree", "dep-dot":
 	default:
-		return fmt.Errorf("unsupported format: %q (supported: json, sarif, cyclonedx-json, spdx-json, vex-json, dep-tree, dep-dot)", format)
+		return fmt.Errorf("unsupported format: %q (supported: json, sarif, cyclonedx-json (or sbom), spdx-json, vex-json, dep-tree, dep-dot)", format)
 	}
 
 	// --upload-github requires SARIF format.
@@ -83,6 +94,7 @@ func runScanExport(cmd *cobra.Command, _ []string) error {
 
 	// Run SAST
 	sastRunner := sast.NewRunner()
+	sastRunner.Quiet = output.IsJSON(formatter) || QuietFromContext(ctx)
 	sastRunner.RespectGitignore = !noGitignore
 	sastResult, err := sastRunner.Analyze(ctx, repo.Root)
 	if err == nil {

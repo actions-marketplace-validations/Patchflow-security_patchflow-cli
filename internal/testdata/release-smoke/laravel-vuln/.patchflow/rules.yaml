@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [laravel]
+  disabled: []
+
+framework_extensions:
+  laravel:
+    safe_patterns:
+      - pattern: "->where\\(|DB::select\\s*\\([^,]+,\\s*\\["
+        reason: "Parameterized query builder"
+
+rules: []

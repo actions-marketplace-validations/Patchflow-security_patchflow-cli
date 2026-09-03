@@ -38,6 +38,8 @@ Thumbs.db
 # Build artifacts
 /dist/
 /build/
+__pycache__/
+*.py[cod]
 
 # Install test logs
 /tests/install/results-*.log

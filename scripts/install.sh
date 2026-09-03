@@ -1,7 +1,7 @@
 #!/bin/sh
 # PatchFlow CLI install script
-# Usage: curl -fsSL https://patchflow.dev/install.sh | bash
-#   or: curl -fsSL https://patchflow.dev/install.sh | bash -s -- --version v0.1.0
+# Usage: curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash
+#   or: curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash -s -- --version v0.1.6
 set -eu
 
 # --- defaults ---
@@ -41,9 +41,9 @@ while [ $# -gt 0 ]; do
             out "Install the PatchFlow CLI on Linux or macOS."
             out ""
             out "Usage:"
-            out "  curl -fsSL https://patchflow.dev/install.sh | bash"
-            out "  curl -fsSL https://patchflow.dev/install.sh | bash -s -- --version vX.Y.Z"
-            out "  curl -fsSL https://patchflow.dev/install.sh | bash -s -- --install-dir /usr/local/bin"
+            out "  curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash"
+            out "  curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash -s -- --version vX.Y.Z"
+            out "  curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash -s -- --install-dir /usr/local/bin"
             out ""
             out "Options:"
             out "  --version <tag>      Install a specific release (default: latest)"
@@ -197,12 +197,13 @@ out "Installed PatchFlow CLI ${VERSION} to ${INSTALL_DIR}/patchflow"
 if [ "$NO_VERIFY" -eq 0 ]; then
     out ""
     out "Verifying installation..."
-    if "${INSTALL_DIR}/patchflow" version >/tmp/patchflow-install-version.txt 2>&1; then
+    VERSION_OUTPUT="${TMPDIR}/patchflow-version.txt"
+    if "${INSTALL_DIR}/patchflow" version >"${VERSION_OUTPUT}" 2>&1; then
         out "Installation verified."
-        cat /tmp/patchflow-install-version.txt
+        cat "${VERSION_OUTPUT}"
     else
         err "Installation verification failed. The binary was installed but does not run correctly."
-        cat /tmp/patchflow-install-version.txt >&2
+        cat "${VERSION_OUTPUT}" >&2
         exit 1
     fi
 fi

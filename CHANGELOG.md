@@ -5,7 +5,140 @@ All notable changes to PatchFlow CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.6] — 2026-07-04
+
+This release fixes critical silent-wrong-output bugs found during a systematic
+evaluation of v0.1.5. Several of these bugs caused the tool to report "clean"
+when vulnerabilities existed — the most dangerous class of defect in a
+security tool. See the "Fixed" section below for details.
+
+All fixes are backed by output-correctness regression tests in
+`internal/integration/output_correctness_test.go`.
+
 ## [Unreleased]
+
+### Fixed — Silent Wrong Output Bugs (Post-v0.1.5 Post-Mortem)
+
+These fixes address bugs found during a systematic evaluation of v0.1.5.
+Several of these were **silent wrong output** bugs — the most dangerous
+class of defect in a security tool because the user believes they are
+protected when they are not.
+
+**P0: CycloneDX SBOM exported 0 vulnerabilities**
+- `scan export --format cyclonedx-json` produced SBOMs with `"vulnerabilities": []`
+  even when the scan found 42 CVEs. The vulnerabilities array was gated behind
+  `IncludeVEX=true`, but VEX (reachability analysis) is the optional part —
+  the vulnerabilities themselves must always be present.
+- **Impact**: Any compliance audit or vulnerability management workflow using
+  the CycloneDX export would believe the project had zero vulnerabilities.
+- **Fix**: Vulnerabilities are now always populated from SCA findings.
+  VEX analysis is only included when `--include-vex` is set.
+- **Test**: `TestCycloneDXVulnerabilitiesPopulatedFromSCAFindings` in
+  `internal/integration/output_correctness_test.go`
+
+**P0: Standard profile crashed on Go projects (taint-ssa panic)**
+- `scan run --profile standard` panicked with "no type for *ast.CallExpr"
+  on Go projects with type errors in dependency packages. The SSA builder
+  spawns internal goroutines that panic without recovery, and `defer/recover()`
+  cannot catch panics from child goroutines.
+- **Impact**: The standard profile (the default for CI) was unusable on
+  real-world Go projects.
+- **Fix**: SSA packages are now built individually with per-package
+  `defer/recover()`. Packages with type errors are skipped in
+  `collectAllPackages` before the build.
+- **Test**: `TestStandardProfileNoCrashOnGoProject`
+
+**P1: `--since` silently dropped all SCA findings**
+- `scan run --since HEAD~1` set `scaAnalyzer.ChangedOnly = true`, which
+  filtered SCA findings to only dependencies whose manifest file changed.
+  A PR that didn't touch `go.mod`/`package.json` would show 0 vulnerabilities
+  even if the project had 42 known CVEs.
+- **Impact**: Developers using `--since` in PR CI believed their changes
+  were clean when existing vulnerabilities were silently ignored.
+- **Fix**: SCA always scans all dependencies regardless of `--changed-only`/
+  `--since`. Vulnerabilities in existing deps are still relevant even if
+  the manifest file wasn't changed in this PR.
+- **Test**: `TestSinceDoesNotDropSCAFindings`
+
+**P1: `deps licenses` showed 0% coverage but `scan run` showed 85%**
+- `deps licenses` used only manifest-extracted licenses (no registry lookup),
+  while `scan run` used the full enrichment pipeline (npm, PyPI, Maven, etc.).
+- **Fix**: `deps licenses` now uses `registry.LicenseAnalyzer` with the same
+  disk cache as `scan run`.
+
+**P1: License enrichment cache was ineffective for empty results**
+- The cache stored empty license strings (`"license":""`) but `Get()` returned
+  `""` for both "not cached" and "cached as empty", causing re-fetching on
+  every scan. A 40-dependency project took 29s on every scan, not just the first.
+- **Fix**: Added `Cache.Has()` method to distinguish "not cached" from
+  "cached as empty". Second scan now takes 1ms instead of 29s.
+
+**P2: SCA findings lacked deterministic rule IDs**
+- SCA findings showed `rule_id: "unknown"` or empty, making suppression
+  (`//patchflow:ignore`) and mode overrides (`.patchflow/rules.yaml`) impossible.
+- **Fix**: SCA findings now get `OSV-CVE-*`, `OSV-GHSA-*`, or `OSV-VULN-*` IDs.
+- **Test**: `TestSCAFindingsHaveDeterministicRuleIDs`
+
+**P2: `report` command re-ran the entire scan**
+- `patchflow report` always re-ran SCA + SAST + reachability from scratch
+  instead of using cached results.
+- **Fix**: `scan run` now saves `last-scan.json` to `.patchflow/reports/`.
+  `report` loads it by default; `--rescan` forces a fresh scan.
+
+**P2: Dependency counts inconsistent across commands**
+- `deps list`, `scan run` JSON, and `scan export cyclonedx` reported different
+  dependency counts because `deps list` didn't resolve Maven transitives.
+- **Fix**: All `deps` subcommands now resolve Maven transitives via
+  `resolveMavenTransitivesIfNeeded()`.
+
+**Minor: SAST logs leaked to stderr in JSON mode**
+- SAST timing logs (e.g., `[sast] secrets-embedded total: 143ms`) were written
+  to stderr even with `--json`, breaking parseable output for CI pipelines.
+- **Fix**: Added `Runner.Quiet` field; redirects log output to `io.Discard`.
+- **Test**: `TestJSONModeNoStderrLeak`
+
+**Minor: G104 rule too noisy**
+- G104 (unhandled errors) is idiomatic in Go (`_ =` pattern) but fired on
+  every occurrence, flooding output with low-value findings.
+- **Fix**: Downgraded G104 to `MaturityExperimental` — only appears in
+  audit profile, not standard/CI scans. Users can re-enable via
+  `.patchflow/rules.yaml`.
+
+**Minor: `sbom` format alias missing**
+- `scan export --format sbom` was not recognized; users had to type
+  `cyclonedx-json`.
+- **Fix**: Added `sbom`→`cyclonedx-json` alias, plus `cyclonedx`/`cdx`/`spdx`.
+
+### Added — Output Correctness Test Suite
+
+A new test suite (`internal/integration/output_correctness_test.go`) that
+verifies **output correctness, not just "doesn't crash."** Each test
+corresponds to a specific silent-wrong-output bug class:
+
+- `TestCycloneDXVulnerabilitiesPopulatedFromSCAFindings` — asserts
+  vulnerabilities array is populated when SCA findings exist, even without
+  `--include-vex`
+- `TestCycloneDXVulnerabilitiesEmptyWhenNoSCAFindings` — asserts the
+  inverse: no vulns when no SCA findings
+- `TestSinceDoesNotDropSCAFindings` — asserts SCA findings match between
+  full scan and `--since` scan
+- `TestStandardProfileNoCrashOnGoProject` — asserts exit code != 2 (panic)
+  on a Go project with the switch+type pattern that triggered the original crash
+- `TestSCAFindingsHaveDeterministicRuleIDs` — asserts all SCA findings have
+  `OSV-*` rule IDs (not "unknown" or empty)
+- `TestJSONModeNoStderrLeak` — asserts no SAST diagnostic logs in stderr
+  when using `--json` mode
+
+### Added — CI Dogfooding Workflow
+
+The `.github/workflows/patchflow-scan.yml` workflow now:
+- Runs `patchflow scan run` on every commit and PR (on the patchflow-cli repo itself)
+- Generates SARIF, JSON, and CycloneDX outputs
+- Validates all three outputs for correctness (vulns populated, rule IDs present,
+  no silent-wrong-output)
+- Uploads SARIF to GitHub Code Scanning
+- Runs the output-correctness test suite
+- Publishes a summary to the GitHub Actions run page
 
 ### Added — B12: CLI Release Hardening
 

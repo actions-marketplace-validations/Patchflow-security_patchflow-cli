@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/Patchflow-security/patchflow-cli/internal/cacheutil"
 	"github.com/Patchflow-security/patchflow-cli/internal/config"
@@ -23,8 +25,10 @@ const (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "patchflow",
-	Short: "PatchFlow CLI - Change Intelligence for engineering teams",
+	Use:           "patchflow",
+	Short:         "PatchFlow CLI - Change Intelligence for engineering teams",
+	SilenceErrors: true,
+	SilenceUsage:  true,
 	Long: `PatchFlow CLI provides change intelligence for engineering teams.
 
 Use this tool to scan, review, and analyze code changes in your repositories.`,
@@ -116,7 +120,38 @@ func init() {
 
 // Execute runs the root command.
 func Execute() error {
-	return rootCmd.Execute()
+	err := rootCmd.Execute()
+	if err == nil || output.IsErrorReported(err) {
+		return err
+	}
+
+	// Cobra errors that happen before a formatter exists (argument parsing,
+	// config loading, and unknown commands) still honor the global JSON
+	// contract. Runtime errors already rendered through PrintError carry the
+	// ReportedError marker and are not written twice.
+	if jsonFlagRequested(os.Args[1:]) {
+		_ = output.NewFormatter(true, true).PrintError(err)
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	}
+	return err
+}
+
+func jsonFlagRequested(args []string) bool {
+	requested := false
+	for _, arg := range args {
+		if arg == "--json" {
+			requested = true
+			continue
+		}
+		if strings.HasPrefix(arg, "--json=") {
+			enabled, err := strconv.ParseBool(strings.TrimPrefix(arg, "--json="))
+			if err == nil {
+				requested = enabled
+			}
+		}
+	}
+	return requested
 }
 
 // ExitCoder is an error that carries a specific exit code for CI integration.

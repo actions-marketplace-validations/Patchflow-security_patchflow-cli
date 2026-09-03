@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "status": "recruiting",
+  "issue": "https://github.com/Patchflow-security/patchflow-cli/issues/5",
+  "methodology": "docs/launch/FRESH_USER_SESSIONS.md",
+  "sessions": [],
+  "summary": {
+    "total_sessions": 0,
+    "successful_under_300_seconds": 0,
+    "median_elapsed_seconds": null,
+    "gate": "pending"
+  }
+}

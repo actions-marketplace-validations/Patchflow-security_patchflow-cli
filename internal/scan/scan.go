@@ -86,7 +86,7 @@ func DetectManifests(root string) ([]Manifest, error) {
 			name := subEntry.Name()
 			if t, ok := manifestTypes[name]; ok {
 				manifests = append(manifests, Manifest{
-					Path: filepath.Join(entry.Name(), name),
+					Path: filepath.ToSlash(filepath.Join(entry.Name(), name)),
 					Type: t,
 				})
 			}

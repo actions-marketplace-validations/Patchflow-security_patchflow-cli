@@ -115,6 +115,15 @@ type Config struct {
 
 	// RuleModes maps rule IDs to their explicit mode (block/inform/off).
 	// Rules not in this map use maturity-based defaults.
+	//
+	// NOTE: The unified --config flag (B11.5.4) routes the same YAML file to
+	// both this loader and the customrules loader. The customrules loader
+	// historically reads `rules:` as a list of custom pattern rules, while
+	// this struct reads `rules:` as a map of rule modes. To keep both uses
+	// working with a single file, LoadFromBytes tolerates `rules:` being
+	// either a mapping (mode overrides) or a sequence (legacy custom rules).
+	// When it is a sequence, RuleModes is left empty and the customrules
+	// loader owns those entries.
 	RuleModes map[string]Mode `yaml:"rules"`
 
 	// CustomRules is the legacy custom pattern rules section (unchanged).
@@ -224,11 +233,51 @@ func LoadFromFile(path string) (*Config, error) {
 }
 
 // LoadFromBytes parses a rules config from YAML bytes.
+//
+// The `rules:` key is ambiguous in the unified config (B11.5.4): it may be a
+// mapping of rule-id -> mode (the mode-override schema) or a sequence of
+// custom pattern rules (the legacy customrules schema, still accepted for
+// backward compatibility). We decode `rules:` into a yaml.Node first and
+// branch on its kind so a single file works with both loaders.
 func LoadFromBytes(data []byte) (*Config, error) {
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// First pass: pull out just the `rules:` node so we can decide how to
+	// decode it. Everything else is decoded normally into cfg below.
+	var probe struct {
+		Rules yaml.Node `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
 		return nil, fmt.Errorf("failed to parse rules config YAML: %w", err)
 	}
+
+	var cfg Config
+	switch probe.Rules.Kind {
+	case yaml.SequenceNode:
+		// `rules:` is a list of custom pattern rules (legacy/customrules
+		// schema). The customrules loader owns these; RuleModes stays empty.
+		// We must decode the rest of the document without the `rules:` field
+		// to avoid a "!!seq into map" unmarshal error.
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			// Fall back to decoding without the conflicting field by zeroing
+			// it via a node-based decode (see decodeIgnoringRules).
+			cfg = Config{}
+			if err2 := decodeIgnoringRules(data, &cfg); err2 != nil {
+				return nil, fmt.Errorf("failed to parse rules config YAML: %w", err)
+			}
+		}
+		cfg.RuleModes = make(map[string]Mode)
+	case yaml.MappingNode:
+		// `rules:` is a map of rule-id -> mode. Decode normally.
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse rules config YAML: %w", err)
+		}
+	default:
+		// No `rules:` key (or scalar/alias). Decode the rest normally.
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse rules config YAML: %w", err)
+		}
+		cfg.RuleModes = make(map[string]Mode)
+	}
+
 	// Validate mode values
 	for id, mode := range cfg.RuleModes {
 		if !mode.IsValid() {
@@ -245,6 +294,34 @@ func LoadFromBytes(data []byte) (*Config, error) {
 		cfg.FrameworkExtensions = make(map[string]rawFrameworkExtension)
 	}
 	return &cfg, nil
+}
+
+// decodeIgnoringRules unmarshals the YAML document into cfg while treating the
+// `rules:` key as absent. This is used when `rules:` is a sequence (custom
+// rules list) so the map-typed RuleModes field does not raise a type error.
+func decodeIgnoringRules(data []byte, cfg *Config) error {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return yaml.Unmarshal(data, cfg)
+	}
+	top := root.Content[0]
+	if top.Kind != yaml.MappingNode {
+		return yaml.Unmarshal(data, cfg)
+	}
+	// Rebuild the mapping without the `rules` key.
+	filtered := &yaml.Node{Kind: yaml.MappingNode, Tag: top.Tag}
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		k := top.Content[i]
+		if k.Kind == yaml.ScalarNode && strings.EqualFold(k.Value, "rules") {
+			continue // skip
+		}
+		filtered.Content = append(filtered.Content, k, top.Content[i+1])
+	}
+	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{filtered}}
+	return doc.Decode(cfg)
 }
 
 // LoadFromDir loads `.patchflow/rules.yaml` from the given directory.

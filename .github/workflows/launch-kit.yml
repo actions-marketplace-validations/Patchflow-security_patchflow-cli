@@ -1,0 +1,42 @@
+name: Public launch kit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/launch-kit.yml'
+      - 'docs/claims/**'
+      - 'docs/launch/**'
+      - 'scripts/validate-launch-kit.py'
+      - 'scripts/tests/test_validate_launch_kit.py'
+      - 'SUPPORT.md'
+      - 'SECURITY.md'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/launch-kit.yml'
+      - 'docs/claims/**'
+      - 'docs/launch/**'
+      - 'scripts/validate-launch-kit.py'
+      - 'scripts/tests/test_validate_launch_kit.py'
+      - 'SUPPORT.md'
+      - 'SECURITY.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-launch-kit:
+    name: Validate launch kit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Validate manifest, local links, and current remote links
+        run: python3 scripts/validate-launch-kit.py --check-remote
+      - name: Test launch-kit gate behavior
+        run: python3 -m unittest scripts/tests/test_validate_launch_kit.py -v

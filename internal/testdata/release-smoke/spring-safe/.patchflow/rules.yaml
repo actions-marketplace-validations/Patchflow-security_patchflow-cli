@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [spring]
+  disabled: []
+
+framework_extensions:
+  spring:
+    safe_patterns:
+      - pattern: "NamedParameterJdbcTemplate|@Query|EntityManager\\.createQuery|PreparedStatement"
+        reason: "Parameterized JPA/JDBC query — taint through bound parameters is safe"
+
+rules: []

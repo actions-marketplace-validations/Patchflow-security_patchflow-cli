@@ -2,7 +2,6 @@ package sast
 
 import (
 	"context"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -339,21 +338,14 @@ func parallelScanFiles(
 
 	// Collect results grouped by scanner
 	results := make(map[string][]analysis.Finding)
-	scannerTimings := make(map[string]time.Duration)
 	var errors []string
 
 	for sr := range resultCh {
-		scannerTimings[sr.scanner] += sr.dur
 		if sr.err != nil {
 			errors = append(errors, sr.scanner+": "+sr.err.Error())
 			continue
 		}
 		results[sr.scanner] = append(results[sr.scanner], sr.findings...)
-	}
-
-	// Log per-scanner timings for debugging.
-	for scanner, dur := range scannerTimings {
-		log.Printf("[sast] %s total: %v", scanner, dur)
 	}
 
 	return results, errors

@@ -92,12 +92,12 @@ func TestAngularRedirectStaticPathSafe(t *testing.T) {
 }
 
 func TestAngularRuleMaturityAndSeverity(t *testing.T) {
-	// Pattern/template rules should be Beta; MatchTaint rules start as
-	// Experimental and promote to Beta after benchmark validation.
+	// Pattern/template rules should be Beta; MatchTaint rules are promoted
+	// to Beta after smoke test validation.
 	for _, rule := range New().Rules() {
 		if rule.MatchMode == frameworks.MatchTaint {
-			if rule.Maturity != frameworks.MaturityExperimental {
-				t.Fatalf("taint rule %s maturity = %s, want experimental", rule.ID, rule.Maturity)
+			if rule.Maturity != frameworks.MaturityBeta {
+				t.Fatalf("taint rule %s maturity = %s, want beta", rule.ID, rule.Maturity)
 			}
 		} else {
 			if rule.Maturity != frameworks.MaturityBeta {

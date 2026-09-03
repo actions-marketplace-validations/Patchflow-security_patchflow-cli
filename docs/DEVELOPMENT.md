@@ -54,6 +54,17 @@ Run with verbose output:
 go test -v ./...
 ```
 
+The default suite is deterministic and does not clone external repositories or
+scan large local benchmark fixtures. Run those opt-in integration tests with:
+
+```bash
+PATCHFLOW_REAL_REPO_TESTS=1 go test ./internal/integration -run 'TestReal|TaintRules|SCA' -v -count=1 -timeout 20m
+```
+
+Real-repository clones have a 90-second limit and each CLI operation has a
+two-minute limit. The tests build the binary from the current checkout, so they
+do not depend on a developer-specific source path.
+
 ## Run
 
 ```bash

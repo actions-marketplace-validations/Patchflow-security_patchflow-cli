@@ -2,10 +2,13 @@ package output
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/Patchflow-security/patchflow-cli/internal/exitcode"
 )
 
 // Formatter defines how CLI output is presented to the user.
@@ -25,6 +28,38 @@ type HumanFormatter struct {
 // JSONFormatter prints output as indented JSON.
 type JSONFormatter struct {
 	w io.Writer
+}
+
+// ReportedError marks an error whose user-facing representation has already
+// been written. It prevents the command runner from emitting a second human or
+// JSON error document while still propagating a non-zero process exit.
+type ReportedError struct {
+	Err error
+}
+
+func (e *ReportedError) Error() string { return e.Err.Error() }
+func (e *ReportedError) Unwrap() error { return e.Err }
+
+// ExitCode preserves a more specific exit code carried by the wrapped error.
+func (e *ReportedError) ExitCode() int {
+	if code, ok := e.Err.(interface{ ExitCode() int }); ok {
+		return code.ExitCode()
+	}
+	return exitcode.InternalError
+}
+
+// MarkErrorReported marks err without writing another representation.
+func MarkErrorReported(err error) error {
+	if err == nil || IsErrorReported(err) {
+		return err
+	}
+	return &ReportedError{Err: err}
+}
+
+// IsErrorReported reports whether an error has already been rendered.
+func IsErrorReported(err error) bool {
+	var reported *ReportedError
+	return errors.As(err, &reported)
 }
 
 // NewFormatter returns a Formatter based on the requested mode with default stdout.
@@ -63,12 +98,21 @@ func (h *HumanFormatter) Print(data any) error {
 
 // PrintError writes an error message.
 func (h *HumanFormatter) PrintError(err error) error {
+	if err == nil {
+		return nil
+	}
 	if h.noColor {
 		_, writeErr := fmt.Fprintf(h.w, "[ERR] error: %v\n", err)
-		return writeErr
+		if writeErr != nil {
+			return writeErr
+		}
+		return MarkErrorReported(err)
 	}
 	_, writeErr := fmt.Fprintf(h.w, "✗ error: %v\n", err)
-	return writeErr
+	if writeErr != nil {
+		return writeErr
+	}
+	return MarkErrorReported(err)
 }
 
 // PrintSuccess writes a success message.
@@ -138,6 +182,9 @@ func (j *JSONFormatter) Print(data any) error {
 
 // PrintError marshals the error to indented JSON and writes it.
 func (j *JSONFormatter) PrintError(err error) error {
+	if err == nil {
+		return nil
+	}
 	type errorOutput struct {
 		Error string `json:"error"`
 	}
@@ -146,7 +193,10 @@ func (j *JSONFormatter) PrintError(err error) error {
 		return marshalErr
 	}
 	_, writeErr := fmt.Fprintln(j.w, string(b))
-	return writeErr
+	if writeErr != nil {
+		return writeErr
+	}
+	return MarkErrorReported(err)
 }
 
 // PrintSuccess marshals a success message to indented JSON and writes it.

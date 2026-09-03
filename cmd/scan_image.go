@@ -19,23 +19,29 @@ var (
 	scanImageOutput     string
 	scanImageTimeout    time.Duration
 	scanImageSeverities string
+	scanImagePlatform   string
+	scanImageInput      string
+	scanImageNoVulns    bool
 )
 
 var scanImageCmd = &cobra.Command{
 	Use:   "image [IMAGE]",
 	Short: "Scan a container image for vulnerabilities and misconfigurations",
 	Long: `Scan a container image for OS package vulnerabilities, language dependency
-vulnerabilities, and misconfigurations.
+vulnerabilities, secrets, hardening issues, and misconfigurations.
 
-This command uses Trivy as an external analyzer. Trivy must be installed
-and available in PATH.
+This command uses the embedded PatchFlow image scanner — no external tools
+required. Images can be pulled from registries, loaded from the local Docker/Podman
+daemon, or imported from tarballs/OCI layouts.
 
 Supported formats: json, markdown.
 
 Examples:
   patchflow scan image nginx:1.21
   patchflow scan image myapp:latest --format json --output report.json
-  patchflow scan image alpine:3.18 --timeout 5m --severities CRITICAL,HIGH`,
+  patchflow scan image alpine:3.18 --timeout 5m --severities CRITICAL,HIGH
+  patchflow scan image --input ./image.tar --platform linux/amd64
+  patchflow scan image docker-daemon:myapp:latest`,
 	Args: cobra.ExactArgs(1),
 	RunE: runScanImage,
 }
@@ -45,6 +51,9 @@ func init() {
 	scanImageCmd.Flags().StringVar(&scanImageOutput, "output", "", "Write report to file (stdout if omitted)")
 	scanImageCmd.Flags().DurationVar(&scanImageTimeout, "timeout", 10*time.Minute, "Scan timeout")
 	scanImageCmd.Flags().StringVar(&scanImageSeverities, "severities", "", "Comma-separated severities to include (CRITICAL,HIGH,MEDIUM,LOW,INFO)")
+	scanImageCmd.Flags().StringVar(&scanImagePlatform, "platform", "", "Platform for multi-arch manifests (e.g. linux/amd64)")
+	scanImageCmd.Flags().StringVar(&scanImageInput, "input", "", "Local tarball or OCI layout path")
+	scanImageCmd.Flags().BoolVar(&scanImageNoVulns, "no-vulns", false, "Skip vulnerability matching (catalog only)")
 	scanCmd.AddCommand(scanImageCmd)
 }
 
@@ -54,10 +63,9 @@ func runScanImage(cmd *cobra.Command, args []string) error {
 
 	scanner := container.NewImageScanner()
 	scanner.Timeout = scanImageTimeout
-
-	if !scanner.IsAvailable() {
-		return formatter.PrintError(fmt.Errorf("trivy is not installed — install it to enable container image scanning (https://trivy.dev)"))
-	}
+	scanner.Platform = scanImagePlatform
+	scanner.Input = scanImageInput
+	scanner.WithVulns = !scanImageNoVulns
 
 	if !output.IsJSON(formatter) {
 		formatter.Print(fmt.Sprintf("Scanning container image: %s", imageName))
@@ -82,6 +90,7 @@ func runScanImage(cmd *cobra.Command, args []string) error {
 	if output.IsJSON(formatter) {
 		return formatter.Print(map[string]interface{}{
 			"image":    result.Target,
+			"packages": result.Packages,
 			"findings": result.Findings,
 			"summary": map[string]int{
 				"total":    len(result.Findings),
@@ -97,6 +106,10 @@ func runScanImage(cmd *cobra.Command, args []string) error {
 	// Terminal output
 	formatter.Print("")
 	formatter.Print(fmt.Sprintf("Image: %s", result.Target))
+	if result.OS != nil {
+		formatter.Print(fmt.Sprintf("OS: %s %s", result.OS.Name, result.OS.VersionID))
+	}
+	formatter.Print(fmt.Sprintf("Packages: %d", result.Packages))
 	formatter.Print(fmt.Sprintf("Total findings: %d", len(result.Findings)))
 	if counts[analysis.SeverityCritical] > 0 {
 		formatter.Print(fmt.Sprintf("  Critical: %d", counts[analysis.SeverityCritical]))
@@ -192,6 +205,7 @@ func filterFindingsBySeverities(findings []analysis.Finding, allowed map[analysi
 func writeImageReportJSON(path string, result *container.ScanResult) error {
 	data, err := json.MarshalIndent(map[string]interface{}{
 		"image":    result.Target,
+		"packages": result.Packages,
 		"findings": result.Findings,
 		"summary": map[string]int{
 			"total": len(result.Findings),
@@ -207,6 +221,7 @@ func writeImageReportJSON(path string, result *container.ScanResult) error {
 func writeImageReportMarkdown(path string, result *container.ScanResult) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Image Scan Report: %s\n\n", result.Target)
+	fmt.Fprintf(&b, "Packages: %d\n\n", result.Packages)
 	fmt.Fprintf(&b, "Total findings: %d\n\n", len(result.Findings))
 	if len(result.Findings) == 0 {
 		b.WriteString("No findings.\n")

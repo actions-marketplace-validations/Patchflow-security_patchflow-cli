@@ -88,12 +88,11 @@ release:
   header: |
     ## PatchFlow CLI v{{.Version}}
 
-    ### Benchmark Results (v1.0)
-    - 18 intentionally vulnerable repos: 100% recall, 918K LOC, 19 CWE categories
-    - 5 historical CVE repos: 100% recall, 387K LOC
-    - 10 clean repos: 0.094 HC/KLOC, 720K LOC
-
-    See [Benchmark Report v1.0](https://github.com/Patchflow-security/patchflow-benchmarks/blob/main/reports/BENCHMARK_REPORT_v1.0.md) for details.
+    Capability and benchmark statements are governed by the
+    [dated claim registry](https://github.com/Patchflow-security/patchflow-cli/blob/main/docs/claims/registry.json).
+    Historical benchmark results remain available in the
+    [benchmark repository](https://github.com/Patchflow-security/patchflow-benchmarks),
+    including their methodology and limitations.
 
 brews:
   - name: patchflow

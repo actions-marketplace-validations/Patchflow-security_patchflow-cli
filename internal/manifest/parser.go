@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1386,7 +1387,21 @@ func ParsePyProjectToml(path string) ([]analysis.Dependency, error) {
 			if strings.HasPrefix(line, "license") {
 				m := tomlKeyValueRe.FindStringSubmatch(line)
 				if m != nil {
-					rootLicense = strings.Trim(m[2], `"'`)
+					licVal := strings.Trim(m[2], `"'`)
+					// Handle inline table: license = {file = "LICENSE.rst"}
+					// or license = {text = "MIT"}
+					if strings.HasPrefix(licVal, "{") {
+						// Extract text = "..." if present
+						textRe := regexp.MustCompile(`text\s*=\s*"([^"]+)"`)
+						if tm := textRe.FindStringSubmatch(licVal); tm != nil {
+							rootLicense = tm[1]
+						} else {
+							// It's a file reference — we can't read it here
+							rootLicense = ""
+						}
+					} else {
+						rootLicense = licVal
+					}
 				}
 			}
 		}
@@ -1406,9 +1421,44 @@ func ParsePyProjectToml(path string) ([]analysis.Dependency, error) {
 		}
 
 		// Array-style: package = ["foo>=1.0", "bar>=2.0"]
-		if tomlArrayDepRe.MatchString(line) && strings.HasSuffix(line, "[") {
-			inArray = true
-			continue
+		// Can be multi-line (starts with [ on its own line) or single-line
+		// (e.g., test = ["pytest"] in [project.optional-dependencies])
+		if tomlArrayDepRe.MatchString(line) {
+			// Check if it's a single-line array: key = ["val1", "val2"]
+			if strings.HasSuffix(line, "]") {
+				// Single-line array — parse the contents directly
+				// Extract the array content between [ and ]
+				bracketStart := strings.Index(line, "[")
+				bracketEnd := strings.LastIndex(line, "]")
+				if bracketStart >= 0 && bracketEnd > bracketStart {
+					arrayContent := line[bracketStart+1 : bracketEnd]
+					// Parse each quoted element
+					depMatches := setupPySingleDepRe.FindAllStringSubmatch(arrayContent, -1)
+					for _, dm := range depMatches {
+						spec := dm[1]
+						dep := parsePythonVersionSpec(spec)
+						if dep == nil {
+							name := strings.ToLower(strings.TrimSpace(spec))
+							if name != "" && name != "python" {
+								deps = append(deps, analysis.Dependency{
+									Name:      name,
+									Version:   "",
+									Ecosystem: analysis.EcosystemPyPI,
+									IsDirect:  true,
+								})
+							}
+						} else {
+							deps = append(deps, *dep)
+						}
+					}
+				}
+				continue
+			}
+			// Multi-line array
+			if strings.HasSuffix(line, "[") {
+				inArray = true
+				continue
+			}
 		}
 		if inArray {
 			if strings.HasPrefix(line, "]") {
@@ -1434,6 +1484,15 @@ func ParsePyProjectToml(path string) ([]analysis.Dependency, error) {
 
 		// Skip non-dependency keys
 		if name == "python" || name == "build-backend" || name == "requires" {
+			continue
+		}
+
+		// In [project.optional-dependencies], the key is an extras group name
+		// (e.g., "test", "dev", "docs"), NOT a package name. Skip the key
+		// and only parse the array values (handled above for single-line arrays).
+		if strings.HasPrefix(section, "[project.optional-dependencies") {
+			// The key is an extras group — skip it as a dependency name.
+			// The actual packages are in the array value, handled above.
 			continue
 		}
 
@@ -1989,7 +2048,7 @@ func ParseCargoToml(path string) ([]analysis.Dependency, error) {
 
 // --- Ruby: Gemfile ---
 
-var gemfileRe = regexp.MustCompile(`^\s*(?:gem|gem\s+["'](.+?)["']\s*,\s*["'](.+?)["'])`)
+var gemfileRe = regexp.MustCompile(`^\s*gem\s+["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?`)
 
 // ParseGemfile parses a Ruby Gemfile.
 func ParseGemfile(path string) ([]analysis.Dependency, error) {
@@ -2008,14 +2067,16 @@ func ParseGemfile(path string) ([]analysis.Dependency, error) {
 			continue
 		}
 		// gem "foo", "~> 1.0"
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
+		// gem 'foo', '~> 1.0'
+		// Use regex to properly extract name and version from quoted strings
+		m := gemfileRe.FindStringSubmatch(line)
+		if m == nil {
 			continue
 		}
-		name := strings.Trim(parts[1], `"'`)
+		name := m[1]
 		version := ""
-		if len(parts) >= 4 {
-			version = strings.Trim(parts[3], `"'~>=< `)
+		if len(m) > 2 && m[2] != "" {
+			version = strings.Trim(m[2], `~>=< `)
 		}
 		deps = append(deps, analysis.Dependency{
 			Name:      name,
@@ -2356,8 +2417,16 @@ func validatePomRelativePath(pomDir, relPath string) (string, bool) {
 		return "", false
 	}
 
-	// Reject absolute paths — parent POM must be relative
-	if filepath.IsAbs(relPath) {
+	// Reject absolute paths in both slash conventions, independent of the
+	// host OS. A POM authored on Unix must remain unsafe when scanned on
+	// Windows, and vice versa.
+	portablePath := strings.ReplaceAll(relPath, "\\", "/")
+	isWindowsVolumePath := len(portablePath) >= 3 &&
+		((portablePath[0] >= 'A' && portablePath[0] <= 'Z') ||
+			(portablePath[0] >= 'a' && portablePath[0] <= 'z')) &&
+		portablePath[1] == ':' && portablePath[2] == '/'
+	if filepath.IsAbs(relPath) || pathpkg.IsAbs(portablePath) ||
+		isWindowsVolumePath || strings.HasPrefix(portablePath, "//") {
 		return "", false
 	}
 

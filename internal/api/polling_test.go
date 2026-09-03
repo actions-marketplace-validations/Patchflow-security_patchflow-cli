@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -19,6 +20,14 @@ func (m *mockAPIClient) PostContext(_ context.Context, _ ContextPayload) (string
 
 func (m *mockAPIClient) PostReview(_ context.Context, _ ReviewPayload) (string, error) {
 	return "", nil
+}
+
+func (m *mockAPIClient) PostScanResults(_ context.Context, _ json.RawMessage, _ int, _ string) (*ScanResultResponse, error) {
+	return &ScanResultResponse{}, nil
+}
+
+func (m *mockAPIClient) PostPRReviewResults(_ context.Context, _ json.RawMessage, _ PRReviewSubmitOpts) (*PRReviewResultResponse, error) {
+	return &PRReviewResultResponse{}, nil
 }
 
 func (m *mockAPIClient) GetStatus(_ context.Context, _ string) (*StatusResponse, error) {

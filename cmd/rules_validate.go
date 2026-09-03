@@ -56,8 +56,12 @@ type rulesValidateResult struct {
 }
 
 // idPattern enforces the rule ID naming convention: uppercase alphanumeric
-// segments separated by a single hyphen, e.g. CUSTOM-001, SQL-INJECTION.
-var idPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{2,}-[A-Z0-9]+$`)
+// segments separated by hyphens, e.g. CUSTOM-001, MYAPP-XSS-001, PF-FASTAPI-SQLI-001.
+// Multi-hyphen IDs are allowed. The first segment starts with a letter and is
+// at least 2 characters; subsequent segments are 1+ uppercase alphanumeric.
+// This matches the examples in the docs (docs/reference/yaml-policy.md) and
+// the official framework rule IDs (PF-FASTAPI-SQLI-001, etc.).
+var idPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+(-[A-Z0-9]+)+$`)
 
 // validSeverities is the set of accepted severity values.
 var validSeverities = map[string]bool{
@@ -314,7 +318,7 @@ func runRulesValidate(cmd *cobra.Command, args []string) error {
 		if r.ID != "" && !idPattern.MatchString(r.ID) {
 			result.Errors = append(result.Errors, ruleValidationError{
 				RuleID: r.ID,
-				Error:  "rule ID must match pattern ^[A-Z][A-Z0-9]{2,}-[A-Z0-9]+$ (uppercase with hyphens)",
+				Error:  "rule ID must match pattern ^[A-Z][A-Z0-9]+(-[A-Z0-9]+)+$ (uppercase alphanumeric segments separated by hyphens, e.g. CUSTOM-001, MYAPP-XSS-001, PF-FASTAPI-SQLI-001)",
 			})
 		}
 	}

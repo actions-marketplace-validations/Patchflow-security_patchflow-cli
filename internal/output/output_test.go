@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+type codedError struct{}
+
+func (codedError) Error() string { return "coded" }
+func (codedError) ExitCode() int { return 7 }
+
 func TestHumanFormatterPrint(t *testing.T) {
 	buf := &bytes.Buffer{}
 	f := NewWriter(buf, false, false)
@@ -85,8 +90,9 @@ func TestHumanFormatterPrintSuccessNoColor(t *testing.T) {
 func TestHumanFormatterPrintError(t *testing.T) {
 	buf := &bytes.Buffer{}
 	f := NewWriter(buf, false, false)
-	if err := f.PrintError(errors.New("boom")); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	inputErr := errors.New("boom")
+	if err := f.PrintError(inputErr); !errors.Is(err, inputErr) || !IsErrorReported(err) {
+		t.Fatalf("PrintError() = %v, want a reported wrapper around the input error", err)
 	}
 	if got := buf.String(); !strings.Contains(got, "✗") {
 		t.Errorf("PrintError() = %q, want cross mark", got)
@@ -99,8 +105,9 @@ func TestHumanFormatterPrintError(t *testing.T) {
 func TestHumanFormatterPrintErrorNoColor(t *testing.T) {
 	buf := &bytes.Buffer{}
 	f := NewWriter(buf, false, true)
-	if err := f.PrintError(errors.New("boom")); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	inputErr := errors.New("boom")
+	if err := f.PrintError(inputErr); !errors.Is(err, inputErr) || !IsErrorReported(err) {
+		t.Fatalf("PrintError() = %v, want a reported wrapper around the input error", err)
 	}
 	want := "[ERR] error: boom\n"
 	if got := buf.String(); got != want {
@@ -126,14 +133,23 @@ func TestJSONFormatterPrintSuccess(t *testing.T) {
 func TestJSONFormatterPrintError(t *testing.T) {
 	buf := &bytes.Buffer{}
 	f := NewWriter(buf, true, false)
-	if err := f.PrintError(errors.New("boom")); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	inputErr := errors.New("boom")
+	if err := f.PrintError(inputErr); !errors.Is(err, inputErr) || !IsErrorReported(err) {
+		t.Fatalf("PrintError() = %v, want a reported wrapper around the input error", err)
 	}
 	want := `{
   "error": "boom"
 }` + "\n"
 	if got := buf.String(); got != want {
 		t.Errorf("PrintError() = %q, want %q", got, want)
+	}
+}
+
+func TestReportedErrorPreservesExitCode(t *testing.T) {
+	err := MarkErrorReported(codedError{})
+	code, ok := err.(interface{ ExitCode() int })
+	if !ok || code.ExitCode() != 7 {
+		t.Fatalf("reported error did not preserve exit code: %v", err)
 	}
 }
 

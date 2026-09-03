@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [angular]
+  disabled: []
+
+framework_extensions:
+  angular:
+    safe_patterns:
+      - pattern: "DomSanitizer|bypassSecurityTrust"
+        reason: "Angular DomSanitizer explicitly sanitizes HTML"
+
+rules: []

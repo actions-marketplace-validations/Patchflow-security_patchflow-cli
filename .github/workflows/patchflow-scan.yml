@@ -1,4 +1,4 @@
-name: PatchFlow Security Scan
+name: PatchFlow Security Scan (Dogfooding)
 
 on:
   push:
@@ -8,10 +8,12 @@ on:
   schedule:
     # Run weekly on Monday at 09:00 UTC
     - cron: '0 9 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
   security-events: write
+  checks: write
 
 jobs:
   patchflow-scan:
@@ -33,7 +35,10 @@ jobs:
             -o patchflow .
           ./patchflow version
 
-      - name: Run PatchFlow scan
+      # =========================================================================
+      # 1. Run scan with SARIF output for GitHub Code Scanning integration
+      # =========================================================================
+      - name: Run PatchFlow scan (SARIF)
         run: ./patchflow scan run --format sarif --output patchflow-results.sarif
         continue-on-error: true
 
@@ -44,9 +49,128 @@ jobs:
           sarif_file: patchflow-results.sarif
           category: patchflow
 
-      - name: Upload scan results artifact
+      # =========================================================================
+      # 2. Run scan with JSON output for correctness validation
+      # =========================================================================
+      - name: Run PatchFlow scan (JSON)
+        run: ./patchflow scan run --json --quiet --output patchflow-results.json
+        continue-on-error: true
+
+      # =========================================================================
+      # 3. Run scan with CycloneDX SBOM output
+      # =========================================================================
+      - name: Run PatchFlow scan (CycloneDX SBOM)
+        run: ./patchflow scan export --format cyclonedx-json --output patchflow-sbom.json
+        continue-on-error: true
+
+      # =========================================================================
+      # 4. Output correctness validation — guards against silent-wrong-output bugs
+      # =========================================================================
+      - name: Validate scan outputs
+        if: always()
+        run: |
+          set -e
+          echo "## PatchFlow Dogfooding Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # --- Validate SARIF ---
+          if [ -f patchflow-results.sarif ]; then
+            SARIF_RUNS=$(python3 -c "import json; d=json.load(open('patchflow-results.sarif')); print(len(d.get('runs',[])))")
+            SARIF_RESULTS=$(python3 -c "import json; d=json.load(open('patchflow-results.sarif')); print(len(d['runs'][0].get('results',[])) if d.get('runs') else 0)")
+            echo "✅ SARIF: $SARIF_RUNS run(s), $SARIF_RESULTS result(s)" >> $GITHUB_STEP_SUMMARY
+            echo "- SARIF: $SARIF_RUNS run(s), $SARIF_RESULTS result(s)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ SARIF: file not generated" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # --- Validate JSON ---
+          if [ -f patchflow-results.json ]; then
+            JSON_FINDINGS=$(python3 -c "import json; d=json.load(open('patchflow-results.json')); print(len(d.get('analysis',{}).get('findings',[])))")
+            JSON_SCA=$(python3 -c "import json; d=json.load(open('patchflow-results.json')); print(len([f for f in d.get('analysis',{}).get('findings',[]) if f.get('type')=='sca']))")
+            JSON_SAST=$(python3 -c "import json; d=json.load(open('patchflow-results.json')); print(len([f for f in d.get('analysis',{}).get('findings',[]) if f.get('type')=='sast']))")
+            echo "✅ JSON: $JSON_FINDINGS finding(s) ($JSON_SCA SCA, $JSON_SAST SAST)" >> $GITHUB_STEP_SUMMARY
+            echo "- JSON: $JSON_FINDINGS finding(s) ($JSON_SCA SCA, $JSON_SAST SAST)" >> $GITHUB_STEP_SUMMARY
+
+            # Verify SCA findings have deterministic rule IDs
+            MISSING_RULE_IDS=$(python3 -c "
+          import json
+          d=json.load(open('patchflow-results.json'))
+          sca=[f for f in d.get('analysis',{}).get('findings',[]) if f.get('type')=='sca']
+          missing=[f for f in sca if not f.get('rule_id') or f.get('rule_id')=='unknown']
+          print(len(missing))
+          ")
+            if [ "$JSON_SCA" != "0" ] && [ "$MISSING_RULE_IDS" != "0" ]; then
+              echo "❌ JSON: $MISSING_RULE_IDS SCA finding(s) have missing/unknown rule_ids" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+          else
+            echo "❌ JSON: file not generated" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # --- Validate CycloneDX SBOM ---
+          if [ -f patchflow-sbom.json ]; then
+            CDX_COMPONENTS=$(python3 -c "import json; d=json.load(open('patchflow-sbom.json')); print(len(d.get('components',[])))")
+            CDX_VULNS=$(python3 -c "import json; d=json.load(open('patchflow-sbom.json')); print(len(d.get('vulnerabilities',[])))")
+            echo "✅ CycloneDX: $CDX_COMPONENTS component(s), $CDX_VULNS vulnerability(ies)" >> $GITHUB_STEP_SUMMARY
+            echo "- CycloneDX: $CDX_COMPONENTS component(s), $CDX_VULNS vulnerability(ies)" >> $GITHUB_STEP_SUMMARY
+
+            # Critical: if JSON has SCA findings, CycloneDX must have vulnerabilities.
+            # This guards against the v0.1.5 bug where CycloneDX exported 0 vulns.
+            if [ "$JSON_SCA" != "0" ] && [ "$CDX_VULNS" == "0" ]; then
+              echo "❌ CycloneDX: 0 vulnerabilities but JSON has $JSON_SCA SCA findings — SILENT WRONG OUTPUT" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+          else
+            echo "❌ CycloneDX: file not generated" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # --- Summary ---
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All output formats validated successfully. No silent-wrong-output bugs detected." >> $GITHUB_STEP_SUMMARY
+
+      # =========================================================================
+      # 5. Upload all artifacts for inspection
+      # =========================================================================
+      - name: Upload SARIF artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always() && hashFiles('patchflow-results.sarif') != ''
         with:
           name: patchflow-sarif
           path: patchflow-results.sarif
+
+      - name: Upload JSON artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && hashFiles('patchflow-results.json') != ''
+        with:
+          name: patchflow-json
+          path: patchflow-results.json
+
+      - name: Upload CycloneDX SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && hashFiles('patchflow-sbom.json') != ''
+        with:
+          name: patchflow-sbom
+          path: patchflow-sbom.json
+
+      # =========================================================================
+      # 6. Run output-correctness test suite (the tests we added to guard
+      #    against the v0.1.5 bugs)
+      # =========================================================================
+      - name: Run output-correctness tests
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          go test ./internal/integration/ \
+            -run "TestCycloneDXVulnerabilities|TestStandardProfileNoCrash|TestJSONModeNoStderr|TestSARIFValidForGitHubCodeScanning" \
+            -json -count=1 -timeout 180s | tee "$RUNNER_TEMP/output-correctness.json"
+          python3 scripts/report-go-test-timings.py "$RUNNER_TEMP/output-correctness.json" --limit 10
+
+      - name: Repeat JSON stream contract
+        timeout-minutes: 4
+        run: go test ./internal/integration/ -run '^TestJSONModeNoStderrLeak$' -v -count=3 -timeout 210s
+
+      - name: Validate SARIF scenario matrix against OASIS schema
+        run: go test ./internal/report -run '^TestSARIFScenarioMatrixValidatesAgainstOfficialSchema$' -v -count=1

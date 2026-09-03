@@ -7,7 +7,7 @@ import (
 
 // Build metadata injected via ldflags during release builds.
 var (
-	Version = "0.1.2"
+	Version = "0.1.6"
 	Commit  = "dev"
 	Date    = "unknown"
 )

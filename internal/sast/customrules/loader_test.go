@@ -217,6 +217,22 @@ func TestParseLanguage_AllLanguages(t *testing.T) {
 		{"ruby", "ruby"},
 		{"rb", "ruby"},
 		{"php", "php"},
+		// Languages added to match docs/reference/yaml-policy.md (12 total).
+		{"java", "java"},
+		{"csharp", "csharp"},
+		{"c_sharp", "csharp"},
+		{"c#", "csharp"},
+		{"go", "go"},
+		{"golang", "go"},
+		{"rust", "rust"},
+		{"rs", "rust"},
+		{"yaml", "yaml"},
+		{"yml", "yaml"},
+		{"dockerfile", "dockerfile"},
+		{"docker", "dockerfile"},
+		{"terraform", "terraform"},
+		{"tf", "terraform"},
+		{"hcl", "terraform"},
 	}
 	for _, tt := range tests {
 		got, err := parseLanguage(tt.input)

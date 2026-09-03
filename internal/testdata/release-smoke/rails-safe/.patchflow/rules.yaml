@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [rails]
+  disabled: []
+
+framework_extensions:
+  rails:
+    safe_patterns:
+      - pattern: "\\.where\\(|\\.find_by\\(|\\.find\\("
+        reason: "Parameterized ActiveRecord query — taint through ORM is safe"
+
+rules: []

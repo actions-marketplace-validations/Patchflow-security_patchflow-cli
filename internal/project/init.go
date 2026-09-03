@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -92,9 +94,11 @@ func DefaultConfig() ProjectConfig {
 
 // InitResult contains the result of an initialization.
 type InitResult struct {
-	ConfigPath string `json:"config_path"`
-	Dir        string `json:"dir"`
-	Created    bool   `json:"created"`
+	ConfigPath     string   `json:"config_path"`
+	RulesPath      string   `json:"rules_path,omitempty"`
+	Dir            string   `json:"dir"`
+	Created        bool     `json:"created"`
+	DetectedFrameworks []string `json:"detected_frameworks,omitempty"`
 }
 
 // Init creates the .patchflow/ directory structure in the given root.
@@ -154,11 +158,151 @@ func Init(root string) (*InitResult, error) {
 	gitignorePath := filepath.Join(pfDir, ".gitignore")
 	_ = os.WriteFile(gitignorePath, []byte(gitignoreContent), 0644)
 
+	// Detect frameworks and generate rules.yaml with a working starter config.
+	// This is the key first-run experience improvement: init now produces a
+	// .patchflow/rules.yaml that immediately customizes the scan for the
+	// detected framework, rather than leaving the user to author YAML from
+	// scratch.
+	detected := detectFrameworksForInit(root)
+	rulesPath := filepath.Join(pfDir, "rules.yaml")
+	rulesContent := generateRulesYAML(detected)
+	if err := os.WriteFile(rulesPath, []byte(rulesContent), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write rules.yaml: %w", err)
+	}
+
 	return &InitResult{
-		ConfigPath: configPath,
-		Dir:        pfDir,
-		Created:    true,
+		ConfigPath:         configPath,
+		RulesPath:          rulesPath,
+		Dir:                pfDir,
+		Created:            true,
+		DetectedFrameworks: detected,
 	}, nil
+}
+
+// detectFrameworksForInit runs framework detection on the repo root and returns
+// the names of detected frameworks (sorted, deduplicated). If detection fails
+// or finds nothing, returns nil — the rules.yaml will use auto_detect only.
+func detectFrameworksForInit(root string) []string {
+	// We import the detector lazily via a function variable to avoid an import
+	// cycle: internal/project cannot import internal/sast/frameworks (which
+	// transitively imports internal/sast). The cmd layer wires the real
+	// detector; if it's not wired, we fall back to auto_detect-only.
+	if frameworkDetector != nil {
+		result := frameworkDetector(root)
+		if result == nil {
+			return nil
+		}
+		seen := make(map[string]bool)
+		var names []string
+		for _, d := range result.Frameworks {
+			name := string(d.Name)
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		return names
+	}
+	return nil
+}
+
+// FrameworkDetectionResult is a local mirror of frameworks.Result to avoid
+// importing the frameworks package (which would create a cycle through sast).
+// The cmd layer converts frameworks.Result → this type via SetFrameworkDetector.
+type FrameworkDetectionResult struct {
+	Frameworks []FrameworkDetection `json:"frameworks"`
+}
+
+// FrameworkDetection mirrors frameworks.Detection for the bridge.
+type FrameworkDetection struct {
+	Name       string  `json:"name"`
+	Language   string  `json:"language"`
+	Confidence float64 `json:"confidence"`
+}
+
+// frameworkDetector is set by cmd/init.go via SetFrameworkDetector to avoid
+// an import cycle (internal/project → internal/sast/frameworks → internal/sast).
+var frameworkDetector func(root string) *FrameworkDetectionResult
+
+// SetFrameworkDetector wires the real framework detector. Called from cmd init.
+func SetFrameworkDetector(fn func(root string) *FrameworkDetectionResult) {
+	frameworkDetector = fn
+}
+
+// generateRulesYAML produces a starter .patchflow/rules.yaml for the detected
+// frameworks. If no frameworks are detected, it generates an auto_detect-only
+// config with commented examples.
+func generateRulesYAML(detected []string) string {
+	var sb strings.Builder
+
+	sb.WriteString(`# PatchFlow project configuration.
+# This file EXTENDS the official embedded rules — it does not replace them.
+# See: patchflow rules list-frameworks  and  patchflow rules list --framework <name>
+# Docs: https://patchflow.ai/docs  (custom-rules, custom-framework-extensions)
+schema_version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Framework pack selection
+# ---------------------------------------------------------------------------
+frameworks:
+  auto_detect: true
+`)
+	if len(detected) > 0 {
+		sb.WriteString("  enabled:\n")
+		for _, fw := range detected {
+			sb.WriteString("    - " + fw + "\n")
+		}
+	} else {
+		sb.WriteString("  enabled: []\n")
+	}
+	sb.WriteString("  disabled: []\n\n")
+
+	// Framework extensions skeleton for the first detected framework.
+	if len(detected) > 0 {
+		primary := detected[0]
+		sb.WriteString("# ---------------------------------------------------------------------------\n")
+		sb.WriteString("# Framework extensions for " + primary + "\n")
+		sb.WriteString("# ---------------------------------------------------------------------------\n")
+		sb.WriteString("# Register your INTERNAL helpers so the taint engine understands them.\n")
+		sb.WriteString("# Sinks are scoped by CWE/category to avoid cross-rule noise.\n")
+		sb.WriteString("# Run `patchflow explain --rule PF-" + strings.ToUpper(primary) + "-*` to see pack rules.\n")
+		sb.WriteString("framework_extensions:\n")
+		sb.WriteString("  " + primary + ":\n")
+		sb.WriteString("    # custom_sanitizers:\n")
+		sb.WriteString("    #   - function: \"sanitize_input\"\n")
+		sb.WriteString("    #   - regex: \"ParameterizedQuery\\\\(\"\n")
+		sb.WriteString("    # safe_patterns:\n")
+		sb.WriteString("    #   - pattern: \"Depends\\\\(get_current_user\\\\)\"\n")
+		sb.WriteString("    #     reason: \"Endpoint enforces JWT auth\"\n")
+		sb.WriteString("    # custom_sinks:\n")
+		sb.WriteString("    #   - function: \"db.execute\"\n")
+		sb.WriteString("    #     cwe: \"CWE-89\"\n")
+		sb.WriteString("    #     category: \"sql_injection\"\n")
+		sb.WriteString("    # custom_sources:\n")
+		sb.WriteString("    #   - function: \"webhook_payload\"\n")
+		sb.WriteString("    #     categories: [sql_injection, ssrf]\n\n")
+	}
+
+	// Custom rules examples (commented out).
+	sb.WriteString("# ---------------------------------------------------------------------------\n")
+	sb.WriteString("# Custom regex rules (project-specific policy)\n")
+	sb.WriteString("# ---------------------------------------------------------------------------\n")
+	sb.WriteString("# IDs must match ^[A-Z][A-Z0-9]+(-[A-Z0-9]+)+$ (e.g. MYAPP-001, TEAM-SEC-002)\n")
+	sb.WriteString("# Supported languages: python, javascript, typescript, ruby, php, java,\n")
+	sb.WriteString("#   csharp, go, rust, yaml, dockerfile, terraform\n")
+	sb.WriteString("rules:\n")
+	sb.WriteString("  # - id: MYAPP-001\n")
+	sb.WriteString("  #   title: Hardcoded API key\n")
+	sb.WriteString("  #   pattern: \"API_KEY\\\\s*=\\\\s*['\\\"][A-Za-z0-9]{32}['\\\"]\"\n")
+	sb.WriteString("  #   severity: critical\n")
+	sb.WriteString("  #   languages: [python]\n")
+	sb.WriteString("  #   confidence: high\n")
+	sb.WriteString("  #   cwe: \"CWE-798\"\n")
+	sb.WriteString("  #   fix_hint: \"Load API keys from environment variables\"\n")
+	sb.WriteString("\n")
+
+	return sb.String()
 }
 
 // LoadConfig reads the .patchflow/config.yml file.

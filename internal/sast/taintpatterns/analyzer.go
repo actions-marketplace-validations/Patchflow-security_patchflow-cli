@@ -286,6 +286,9 @@ func isFunctionDef(nodeType, lang string) bool {
 		return nodeType == "method_declaration" || nodeType == "constructor_declaration"
 	case "c_sharp":
 		return nodeType == "method_declaration" || nodeType == "constructor_declaration"
+	case "go":
+		return nodeType == "function_declaration" || nodeType == "method_declaration" ||
+			nodeType == "func_literal"
 	}
 	return false
 }
@@ -532,26 +535,48 @@ func (a *Analyzer) walkFunctionBody(node *gotreesitter.Node, bt *gotreesitter.Bo
 	// PHP: assignment_expression, simple_assignment
 	// Java: local_variable_declaration (wraps variable_declarator)
 	// C#: local_declaration_statement (wraps variable_declaration → variable_declarator)
+	// Go: short_var_declaration (:=), var_declaration (var x = ...), assignment_statement (=)
 	if nt == "assignment" || nt == "assignment_expression" || nt == "variable_declarator" ||
 		nt == "lexical_declaration" || nt == "variable_declaration" ||
 		nt == "operator_assignment" || nt == "simple_assignment" ||
-		nt == "local_variable_declaration" || nt == "local_declaration_statement" {
+		nt == "local_variable_declaration" || nt == "local_declaration_statement" ||
+		nt == "short_var_declaration" || nt == "var_declaration" || nt == "assignment_statement" {
 		a.checkAssignment(node, bt, lang, src, taintedVars)
 	}
 
 	// Check for sink calls: sink(tainted_var)
 	// Python: "call", JS/TS: "call_expression", Ruby: "call",
-	// PHP: "function_call_expression", Java: "method_invocation",
-	// C#: "invocation_expression"
+	// PHP: "function_call_expression", "member_call_expression", "scoped_call_expression"
+	// Java: "method_invocation", C#: "invocation_expression"
 	// Java/C#: "object_creation_expression" (new keyword constructor calls)
+	// Go: "call_expression" (same as JS/TS)
 	if nt == "call" || nt == "call_expression" ||
 		nt == "function_call_expression" || nt == "method_invocation" ||
-		nt == "invocation_expression" || nt == "object_creation_expression" {
+		nt == "invocation_expression" || nt == "object_creation_expression" ||
+		nt == "member_call_expression" || nt == "scoped_call_expression" {
 		a.checkSinkCall(node, bt, lang, absPath, root, src, taintedVars, findings)
 	}
 
 	for i := 0; i < int(node.ChildCount()); i++ {
-		a.walkFunctionBody(node.Child(i), bt, lang, absPath, root, src, taintedVars, findings)
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		// Closure capture: when we encounter a func_literal (Go) or
+		// arrow_function (JS/TS) inside a function body, analyze it with
+		// a COPY of the current taintedVars so captured variables are
+		// tainted in the closure's scope.
+		ct := bt.NodeType(child)
+		if isFunctionDef(ct, lang) {
+			closureVars := make(map[string]bool)
+			for k, v := range taintedVars {
+				closureVars[k] = v
+			}
+			a.seedAnnotatedParams(child, bt, lang, src, closureVars)
+			a.walkFunctionBody(child, bt, lang, absPath, root, src, closureVars, findings)
+			continue
+		}
+		a.walkFunctionBody(child, bt, lang, absPath, root, src, taintedVars, findings)
 	}
 }
 
@@ -622,6 +647,41 @@ func (a *Analyzer) checkAssignment(node *gotreesitter.Node, bt *gotreesitter.Bou
 				break
 			}
 		}
+	} else if nt == "short_var_declaration" || nt == "assignment_statement" {
+		// Go: short_var_declaration (q := expr) and assignment_statement (q = expr)
+		// Both have two expression_list children: LHS and RHS, separated by := or =
+		var exprLists []*gotreesitter.Node
+		for i := 0; i < int(node.ChildCount()); i++ {
+			child := node.Child(i)
+			if child == nil {
+				continue
+			}
+			if bt.NodeType(child) == "expression_list" {
+				exprLists = append(exprLists, child)
+			}
+		}
+		if len(exprLists) >= 2 {
+			lhsNode = exprLists[0]
+			rhsNode = exprLists[1]
+		}
+	} else if nt == "var_declaration" {
+		// Go: var q string = expr
+		// Has identifier (name), optional type, and expression_list (value)
+		var exprList *gotreesitter.Node
+		for i := 0; i < int(node.ChildCount()); i++ {
+			child := node.Child(i)
+			if child == nil {
+				continue
+			}
+			ct := bt.NodeType(child)
+			if ct == "identifier" && lhsNode == nil {
+				lhsNode = child
+			}
+			if ct == "expression_list" {
+				exprList = child
+			}
+		}
+		rhsNode = exprList
 	}
 
 	if lhsNode == nil || rhsNode == nil {
@@ -631,6 +691,13 @@ func (a *Analyzer) checkAssignment(node *gotreesitter.Node, bt *gotreesitter.Bou
 	varName := bt.NodeText(lhsNode)
 	if varName == "" {
 		return
+	}
+	// Go expression_list may contain multiple identifiers (e.g., "q, err").
+	// Extract just the first identifier for taint tracking.
+	if nt == "short_var_declaration" || nt == "assignment_statement" || nt == "var_declaration" {
+		if first := firstIdentifier(lhsNode, bt); first != "" {
+			varName = first
+		}
 	}
 
 	// Check if the RHS is a call to a sanitizer — if so, clear taint.
@@ -695,6 +762,8 @@ func defaultSanitizers(lang string) []string {
 		return []string{"StringEscapeUtils.escapeHtml", "URLEncoder.encode", "org.apache.commons.text.StringEscapeUtils.escapeHtml4"}
 	case "c_sharp":
 		return []string{"HttpUtility.HtmlEncode", "WebUtility.HtmlEncode", "HttpUtility.UrlEncode"}
+	case "go":
+		return []string{"filepath.Clean", "filepath.Base", "html.EscapeString", "url.QueryEscape", "url.PathEscape", "regexp.MustCompile", "strconv.Atoi", "strconv.ParseInt"}
 	default:
 		return nil
 	}
@@ -737,9 +806,15 @@ func (a *Analyzer) checkSinkCall(node *gotreesitter.Node, bt *gotreesitter.Bound
 
 				argText := bt.NodeText(arg)
 				if isArgTainted(arg, bt, taintedVars) {
-					f := a.makeFinding(rule, node, bt, absPath, root, funcName, argText, taintedVars)
-					*findings = append(*findings, f)
-					break
+					// Check if the argument is wrapped in a sanitizer call
+					// (e.g., os.ReadFile(filepath.Clean(file))). If the
+					// outermost call in the argument is a sanitizer, skip
+					// the finding — the sanitizer neutralizes the taint.
+					if !isArgSanitized(arg, bt, lang, a) {
+						f := a.makeFinding(rule, node, bt, absPath, root, funcName, argText, taintedVars)
+						*findings = append(*findings, f)
+						break
+					}
 				}
 				// Also check for direct source-to-sink flows where the source
 				// is used inline in the sink argument without being assigned to
@@ -761,6 +836,18 @@ func (a *Analyzer) checkSinkCall(node *gotreesitter.Node, bt *gotreesitter.Bound
 // different tree-sitter grammars.
 func extractCallName(node *gotreesitter.Node, bt *gotreesitter.BoundTree, lang string) string {
 	nt := bt.NodeType(node)
+
+	// Go wraps expressions in expression_list. Unwrap to the first child.
+	if nt == "expression_list" {
+		for i := 0; i < int(node.ChildCount()); i++ {
+			child := node.Child(i)
+			if child == nil || isPunctuation(bt.NodeType(child)) {
+				continue
+			}
+			return extractCallName(child, bt, lang)
+		}
+		return ""
+	}
 
 	// Python "call" uses the "function" field
 	if nt == "call" && lang == "python" {
@@ -800,6 +887,18 @@ func extractCallName(node *gotreesitter.Node, bt *gotreesitter.BoundTree, lang s
 		return ""
 	}
 
+	// PHP "member_call_expression" has: variable_name(receiver) + name(method)
+	// Return the full receiver->method path (e.g., "$request->get", "DB::select")
+	if nt == "member_call_expression" {
+		return extractDottedPath(node, bt)
+	}
+
+	// PHP "scoped_call_expression" has: qualified_name(receiver) + name(method)
+	// e.g., \DB::select(args) → "DB::select"
+	if nt == "scoped_call_expression" {
+		return extractDottedPath(node, bt)
+	}
+
 	// Java "method_invocation" has: identifier(receiver) + "." + identifier(method)
 	// Return the full dotted path (e.g., "request.getParameter") for precise matching.
 	if nt == "method_invocation" {
@@ -833,7 +932,7 @@ func extractCallName(node *gotreesitter.Node, bt *gotreesitter.BoundTree, lang s
 		return ""
 	}
 
-	// Java/C# "object_creation_expression" (new Type(args))
+	// Java/C#/PHP "object_creation_expression" (new Type(args))
 	// Extract the type name — it's the last identifier in the type part
 	if nt == "object_creation_expression" {
 		for i := 0; i < int(node.ChildCount()); i++ {
@@ -843,8 +942,19 @@ func extractCallName(node *gotreesitter.Node, bt *gotreesitter.BoundTree, lang s
 			}
 			ct := bt.NodeType(child)
 			// Java: type_identifier, C#: identifier or qualified_name
-			if ct == "type_identifier" || ct == "identifier" {
+			// PHP: name (e.g., RedirectResponse) or qualified_name (e.g., \Symfony\...\RedirectResponse)
+			if ct == "type_identifier" || ct == "identifier" || ct == "name" {
 				return bt.NodeText(child)
+			}
+			if ct == "qualified_name" {
+				// Extract the last segment after backslashes (PHP) or dots (C#)
+				text := bt.NodeText(child)
+				text = strings.TrimPrefix(text, "\\")
+				// Take the last segment after \
+				if idx := strings.LastIndex(text, "\\"); idx >= 0 {
+					text = text[idx+1:]
+				}
+				return text
 			}
 		}
 		return ""
@@ -875,10 +985,12 @@ func extractLastIdentifier(node *gotreesitter.Node, bt *gotreesitter.BoundTree) 
 
 // extractDottedPath returns the full receiver.method path from a call node.
 // For example, Ruby "File.open(args)" → "File.open", "User.where(args)" → "User.where".
-// It concatenates identifier/constant children with "." separators, stopping
-// before the argument_list.
+// PHP "$request->get(args)" → "$request->get", "DB::select(args)" → "DB::select".
+// It concatenates identifier/constant/variable_name/name children with appropriate
+// separators, stopping before the argument_list.
 func extractDottedPath(node *gotreesitter.Node, bt *gotreesitter.BoundTree) string {
 	var parts []string
+	var sep = "."
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
 		if child == nil {
@@ -888,11 +1000,37 @@ func extractDottedPath(node *gotreesitter.Node, bt *gotreesitter.BoundTree) stri
 		if ct == "argument_list" || ct == "arguments" {
 			break
 		}
-		if ct == "identifier" || ct == "constant" {
-			parts = append(parts, bt.NodeText(child))
+		// PHP member_call_expression uses "->" between receiver and method
+		if ct == "->" {
+			sep = "->"
+			continue
+		}
+		// PHP scoped call uses "::"
+		if ct == "::" {
+			sep = "::"
+			continue
+		}
+		if ct == "identifier" || ct == "constant" || ct == "variable_name" || ct == "name" || ct == "qualified_name" {
+			text := bt.NodeText(child)
+			// Strip leading backslash from PHP qualified names (e.g., "\DB" → "DB")
+			text = strings.TrimPrefix(text, "\\")
+			parts = append(parts, text)
 		}
 	}
-	return strings.Join(parts, ".")
+	if len(parts) < 2 {
+		return strings.Join(parts, sep)
+	}
+	// Use the detected separator between the last two parts (receiver->method)
+	// and "." for earlier parts (e.g., package.Class.method in Java)
+	result := parts[0]
+	for i := 1; i < len(parts); i++ {
+		if i == len(parts)-1 && sep != "." {
+			result += sep + parts[i]
+		} else {
+			result += "." + parts[i]
+		}
+	}
+	return result
 }
 
 // extractCallArgs extracts the arguments node from a call node across
@@ -926,7 +1064,27 @@ func isPunctuation(nodeType string) bool {
 	return nodeType == "(" || nodeType == ")" || nodeType == "," ||
 		nodeType == "[" || nodeType == "]" || nodeType == "{" || nodeType == "}" ||
 		nodeType == ";" || nodeType == "->" || nodeType == "=>" ||
-		nodeType == "::" || nodeType == "."
+		nodeType == "::" || nodeType == "." || nodeType == ":=" ||
+		nodeType == "="
+}
+
+// firstIdentifier returns the text of the first identifier descendant of a
+// node. Used for Go's expression_list which may contain multiple identifiers
+// (e.g., "q, err := ..."). Returns "" if no identifier is found.
+func firstIdentifier(node *gotreesitter.Node, bt *gotreesitter.BoundTree) string {
+	if node == nil {
+		return ""
+	}
+	nt := bt.NodeType(node)
+	if nt == "identifier" || nt == "field_identifier" {
+		return bt.NodeText(node)
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		if result := firstIdentifier(node.Child(i), bt); result != "" {
+			return result
+		}
+	}
+	return ""
 }
 
 // matchesSource checks if a node represents a taint source.
@@ -1003,6 +1161,40 @@ func isArgTainted(arg *gotreesitter.Node, bt *gotreesitter.BoundTree, taintedVar
 	return referencesTaintedVar(arg, bt, taintedVars)
 }
 
+// isArgSanitized checks if the argument is wrapped in a sanitizer call,
+// e.g., os.ReadFile(filepath.Clean(file)). It checks if the outermost
+// expression in the argument is a call to a known sanitizer function.
+func isArgSanitized(arg *gotreesitter.Node, bt *gotreesitter.BoundTree, lang string, a *Analyzer) bool {
+	if arg == nil || a == nil {
+		return false
+	}
+	// The argument itself might be a call expression (e.g., filepath.Clean(file))
+	// or it might be wrapped in an "argument" node (PHP) or expression_list (Go).
+	nt := bt.NodeType(arg)
+	// Unwrap wrapper nodes to find the actual expression
+	expr := arg
+	if nt == "argument" || nt == "expression_list" {
+		for i := 0; i < int(arg.ChildCount()); i++ {
+			child := arg.Child(i)
+			if child == nil || isPunctuation(bt.NodeType(child)) {
+				continue
+			}
+			expr = child
+			break
+		}
+	}
+	// Check if the expression is a sanitizer call
+	exprType := bt.NodeType(expr)
+	if exprType == "call_expression" || exprType == "member_call_expression" ||
+		exprType == "scoped_call_expression" || exprType == "function_call_expression" {
+		funcName := extractCallName(expr, bt, lang)
+		if funcName != "" && a.isSanitizer(funcName, lang) {
+			return true
+		}
+	}
+	return false
+}
+
 // sinkMatches checks if a function name matches a sink pattern.
 func sinkMatches(funcName, sinkPattern string) bool {
 	// Exact match
@@ -1015,6 +1207,10 @@ func sinkMatches(funcName, sinkPattern string) bool {
 	}
 	// Qualified call: Module::Class.method matches sink "method"
 	if strings.HasSuffix(funcName, "::"+sinkPattern) {
+		return true
+	}
+	// PHP member call: $obj->method matches sink "method"
+	if strings.HasSuffix(funcName, "->"+sinkPattern) {
 		return true
 	}
 	return false

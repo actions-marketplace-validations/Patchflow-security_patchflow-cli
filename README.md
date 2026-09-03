@@ -1,77 +1,84 @@
 # PatchFlow CLI — Change Intelligence for Engineering Teams
 
-PatchFlow CLI provides change intelligence for engineering teams. Use it to scan, review, and analyze code changes in your repositories.
+PatchFlow is a local-first security scanner for source code, dependencies, and
+secrets. A local scan requires no account and does not upload source code.
 
-## Installation
+## Install and scan in under five minutes
 
-### Homebrew (macOS)
+Use the official installer. On macOS or Linux:
+
+```bash
+curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.ps1 | iex
+$env:Path = "$env:LOCALAPPDATA\PatchFlow\bin;$env:Path"
+```
+
+Then scan the repository in the current directory. This deterministic first run
+uses local data; embedded scanners need no additional installation, while any
+supported external scanners already on the machine may add findings:
+
+```bash
+patchflow doctor
+patchflow scan run --offline --no-licenses --no-reachability
+```
+
+To reproduce the vulnerable, clean, explanation, and SARIF path against the
+versioned public fixture:
+
+```bash
+git clone --depth 1 https://github.com/Patchflow-security/patchflow-cli.git
+cd patchflow-cli
+./scripts/verify-quickstart.sh "$(command -v patchflow)"
+```
+
+See the [two-minute demo runbook](docs/launch/DEMO.md) for the visible scan,
+`explain`, and SARIF commands.
+
+We are validating this path with five people who have not used PatchFlow before.
+Moderators must follow the [fresh-user session protocol](docs/launch/FRESH_USER_SESSIONS.md)
+so timing, success, privacy, and failure evidence are recorded consistently.
+
+## Other installation methods
+
+Homebrew on macOS:
 
 ```bash
 brew install Patchflow-security/tap/patchflow
 ```
 
-> **Note for Linux users:** The Patchflow Security tap does not currently publish Linux bottles. On Linux, `brew install` will fall back to building from source and requires a C compiler (`gcc` or `clang`). We recommend using the install script above for Linux and containerized environments.
-
-### Scoop (Windows)
+Scoop on Windows:
 
 ```powershell
 scoop bucket add patchflow https://github.com/Patchflow-security/scoop-bucket
 scoop install patchflow
 ```
 
-### Install Script (recommended for Linux / CI / Docker)
+Container:
 
 ```bash
-curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash
+docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/patchflow-security/cli:latest scan run --offline
 ```
 
-If you prefer the binary to be in your PATH immediately (e.g., inside a Docker/Podman container), install to `/usr/local/bin`:
+You can also use `go install github.com/Patchflow-security/patchflow-cli@latest`,
+build from source, or download a signed archive from the
+[releases page](https://github.com/Patchflow-security/patchflow-cli/releases).
+
+## Canonical repository
+
+[`Patchflow-security/patchflow-cli`](https://github.com/Patchflow-security/patchflow-cli)
+is the source of truth for development, issues, pull requests, tags, and releases.
+Release artifacts must resolve to commits and tags reachable from this repository.
+See [RELEASE.md](RELEASE.md#repository-source-of-truth) for provenance checks.
+
+## More commands
 
 ```bash
-curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash -s -- --install-dir /usr/local/bin
-```
-
-Other options:
-
-```bash
-# Install a specific version
-curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash -s -- --version v0.1.3
-
-# Skip the post-install binary verification step (useful in CI)
-NO_VERIFY=1 curl -fsSL https://github.com/Patchflow-security/patchflow-cli/raw/main/scripts/install.sh | bash
-```
-
-### Docker / Podman
-
-```bash
-podman pull ghcr.io/patchflow-security/cli:latest
-podman run --rm -v "$PWD:/repo" ghcr.io/patchflow-security/cli:latest scan run --path /repo
-```
-
-### Go Install
-
-```bash
-go install github.com/Patchflow-security/patchflow-cli@latest
-```
-
-### Build from Source
-
-```bash
-git clone https://github.com/Patchflow-security/patchflow-cli.git
-cd patchflow-cli
-go build -o patchflow .
-```
-
-### Download Binary
-
-Download the latest binary for your platform from the [releases page](https://github.com/Patchflow-security/patchflow-cli/releases).
-
-## Quick Start
-
-```bash
-# Initialize PatchFlow in your repository
-patchflow init
-
 # Run a full security analysis (SCA + SAST + reachability + risk score)
 patchflow scan run
 
@@ -225,6 +232,10 @@ https://api.patchflow.dev
 
 All commands support `--json` for machine-readable output. This is useful for CI/CD pipelines and automation.
 
+See [Machine-readable output contracts](docs/MACHINE_READABLE_OUTPUTS.md) for
+stdout/stderr guarantees, SARIF conformance, compatibility rules, and release
+validation requirements.
+
 ```bash
 # Get version info as JSON
 patchflow version --json
@@ -242,6 +253,16 @@ patchflow scan changed --json
 ## Security
 
 By default, the CLI sends only metadata (file paths, branch names, diff stats). It does not send source code contents unless explicitly configured.
+
+Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md),
+not a public issue.
+
+## Community
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Support channels](SUPPORT.md)
+- [Governance](GOVERNANCE.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## Examples
 
@@ -367,6 +388,13 @@ patchflow report --format json --output report.json
 - **[Developer Guide](docs/DEVELOPER_GUIDE.md)** — Architecture, package reference, adding commands, testing, coding standards, and release process.
 - **[Command Reference](docs/CLI_COMMANDS.md)** — Quick reference for every command and flag.
 - **[Development Guide](docs/DEVELOPMENT.md)** — Build, test, and project structure overview.
+- **[Public Roadmap](ROADMAP.md)** — Now/Next/Later outcomes, framework-rule maturity, and bounded contribution opportunities.
+- **[Triage Policy](docs/TRIAGE.md)** — Labels, response targets, contributor-ready criteria, and inactivity rules.
+
+New contributors can start from a bounded
+[`good first issue`](https://github.com/Patchflow-security/patchflow-cli/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22),
+a guided [`help wanted`](https://github.com/Patchflow-security/patchflow-cli/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+task, or the [issue chooser](https://github.com/Patchflow-security/patchflow-cli/issues/new/choose).
 
 ## Development
 

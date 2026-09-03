@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a user outcome or workflow improvement for PatchFlow CLI.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and the current command documentation.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem without prescribing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should a user be able to accomplish, and how would success be measured?
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Current workflow and alternatives
+      description: Show the current commands or workarounds and why they are insufficient.
+    validations:
+      required: true
+  - type: textarea
+    id: interface
+    attributes:
+      label: Proposed CLI or output contract
+      description: Optional example flags, JSON/SARIF fields, exit codes, or configuration.
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Local-first, privacy, and security impact
+      description: Identify any source upload, network call, credential, sandbox, or trust-boundary change.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and performance impact
+      description: Note platform, schema, runtime, binary-size, benchmark, or migration concerns.

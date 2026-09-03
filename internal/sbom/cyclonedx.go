@@ -211,41 +211,45 @@ func buildCycloneDXBOM(result *analysis.AnalysisResult, cfg GenerateConfig) *cyc
 		bom.Components = append(bom.Components, comp)
 	}
 
-	// VEX: vulnerabilities from SCA findings
-	if cfg.IncludeVEX {
-		bom.Vulnerabilities = []cycloneDXVuln{}
-		for _, f := range result.Findings {
-			if f.Type != analysis.TypeSCA {
-				continue
-			}
-			vuln := cycloneDXVuln{
-				ID: vulnID(f),
-				Source: cycloneDXSource{
-					Name: "OSV.dev",
-					URL:  f.AdvisoryURL,
-				},
-				Description: f.Description,
-				Affects: []cycloneDXAffect{
-					{Ref: componentRefByNameVer(f.PackageName, f.PackageVersion)},
-				},
-				Analysis: reachabilityToCycloneDXAnalysis(f),
-			}
-
-			rating := cycloneDXRating{
-				Severity: string(f.Severity),
-				Method:   "other",
-			}
-			vuln.Ratings = append(vuln.Ratings, rating)
-
-			// Add response if there's a fixed version
-			if f.FixedVersion != "" && vuln.Analysis != nil {
-				vuln.Analysis.Response = []string{
-					fmt.Sprintf("Upgrade to %s or later", f.FixedVersion),
-				}
-			}
-
-			bom.Vulnerabilities = append(bom.Vulnerabilities, vuln)
+	// Vulnerabilities from SCA findings — always included so the SBOM is
+	// useful for vulnerability management. When IncludeVEX is true, the
+	// VEX analysis (reachability-based exploitability) is also embedded.
+	bom.Vulnerabilities = []cycloneDXVuln{}
+	for _, f := range result.Findings {
+		if f.Type != analysis.TypeSCA {
+			continue
 		}
+		vuln := cycloneDXVuln{
+			ID: vulnID(f),
+			Source: cycloneDXSource{
+				Name: "OSV.dev",
+				URL:  f.AdvisoryURL,
+			},
+			Description: f.Description,
+			Affects: []cycloneDXAffect{
+				{Ref: componentRefByNameVer(f.PackageName, f.PackageVersion)},
+			},
+		}
+
+		// VEX analysis is only included when --include-vex is set.
+		if cfg.IncludeVEX {
+			vuln.Analysis = reachabilityToCycloneDXAnalysis(f)
+		}
+
+		rating := cycloneDXRating{
+			Severity: string(f.Severity),
+			Method:   "other",
+		}
+		vuln.Ratings = append(vuln.Ratings, rating)
+
+		// Add response if there's a fixed version
+		if f.FixedVersion != "" && vuln.Analysis != nil {
+			vuln.Analysis.Response = []string{
+				fmt.Sprintf("Upgrade to %s or later", f.FixedVersion),
+			}
+		}
+
+		bom.Vulnerabilities = append(bom.Vulnerabilities, vuln)
 	}
 
 	return bom

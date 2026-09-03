@@ -1,6 +1,8 @@
 package report
 
 import (
+	"bytes"
+	_ "embed"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -8,7 +10,11 @@ import (
 
 	"github.com/Patchflow-security/patchflow-cli/internal/analysis"
 	"github.com/Patchflow-security/patchflow-cli/internal/risk"
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
+
+//go:embed testdata/sarif-schema-2.1.0.json
+var sarifSchemaJSON []byte
 
 func TestTerminalSummary(t *testing.T) {
 	result := &analysis.AnalysisResult{
@@ -195,45 +201,45 @@ func TestSARIF(t *testing.T) {
 func TestGroupSCAFindings(t *testing.T) {
 	findings := []analysis.Finding{
 		{
-			ID:             "sca-npm-next-GHSA-1",
-			Type:           analysis.TypeSCA,
-			Severity:       analysis.SeverityMedium,
-			Title:          "next@16.0.10: GHSA-1",
-			PackageName:    "next",
-			PackageVersion: "16.0.10",
-			FilePath:       "package.json",
-			Reachability:   analysis.ReachabilityHigh,
+			ID:                     "sca-npm-next-GHSA-1",
+			Type:                   analysis.TypeSCA,
+			Severity:               analysis.SeverityMedium,
+			Title:                  "next@16.0.10: GHSA-1",
+			PackageName:            "next",
+			PackageVersion:         "16.0.10",
+			FilePath:               "package.json",
+			Reachability:           analysis.ReachabilityHigh,
 			ReachabilityConfidence: analysis.ConfidenceHigh,
 		},
 		{
-			ID:             "sca-npm-next-GHSA-2",
-			Type:           analysis.TypeSCA,
-			Severity:       analysis.SeverityMedium,
-			Title:          "next@16.0.10: GHSA-2",
-			PackageName:    "next",
-			PackageVersion: "16.0.10",
-			FilePath:       "package.json",
-			Reachability:   analysis.ReachabilityHigh,
+			ID:                     "sca-npm-next-GHSA-2",
+			Type:                   analysis.TypeSCA,
+			Severity:               analysis.SeverityMedium,
+			Title:                  "next@16.0.10: GHSA-2",
+			PackageName:            "next",
+			PackageVersion:         "16.0.10",
+			FilePath:               "package.json",
+			Reachability:           analysis.ReachabilityHigh,
 			ReachabilityConfidence: analysis.ConfidenceHigh,
 		},
 		{
-			ID:             "sca-npm-vite-GHSA-3",
-			Type:           analysis.TypeSCA,
-			Severity:       analysis.SeverityMedium,
-			Title:          "vite@8.0.12: GHSA-3",
-			PackageName:    "vite",
-			PackageVersion: "8.0.12",
-			FilePath:       "package.json",
-			Reachability:   analysis.ReachabilityHigh,
+			ID:                     "sca-npm-vite-GHSA-3",
+			Type:                   analysis.TypeSCA,
+			Severity:               analysis.SeverityMedium,
+			Title:                  "vite@8.0.12: GHSA-3",
+			PackageName:            "vite",
+			PackageVersion:         "8.0.12",
+			FilePath:               "package.json",
+			Reachability:           analysis.ReachabilityHigh,
 			ReachabilityConfidence: analysis.ConfidenceHigh,
 		},
 		{
-			ID:             "sast-1",
-			Type:           analysis.TypeSAST,
-			Severity:       analysis.SeverityHigh,
-			Title:          "SQL injection",
-			FilePath:       "src/main.go",
-			LineStart:      42,
+			ID:        "sast-1",
+			Type:      analysis.TypeSAST,
+			Severity:  analysis.SeverityHigh,
+			Title:     "SQL injection",
+			FilePath:  "src/main.go",
+			LineStart: 42,
 		},
 	}
 
@@ -297,32 +303,32 @@ func TestSeverityToSARIFLevel(t *testing.T) {
 func TestJSONIncludesScanMetadataAndFingerprints(t *testing.T) {
 	findings := []analysis.Finding{
 		{
-			Type:     analysis.TypeSAST,
-			Analyzer: "gosast-embedded",
-			RuleID:   "G104",
-			FilePath: "app/handler.go",
+			Type:      analysis.TypeSAST,
+			Analyzer:  "gosast-embedded",
+			RuleID:    "G104",
+			FilePath:  "app/handler.go",
 			LineStart: 10,
-			Evidence: "http.Get(url)",
-			Title:    "Errors unhandled",
-			Severity: analysis.SeverityMedium,
+			Evidence:  "http.Get(url)",
+			Title:     "Errors unhandled",
+			Severity:  analysis.SeverityMedium,
 		},
 	}
 	analysis.PopulateFingerprints(findings)
 
 	result := &analysis.AnalysisResult{
-		ScanID:    "test-scan-123",
+		ScanID:      "test-scan-123",
 		ProjectRoot: "/test/repo",
-		Branch:    "main",
-		CommitSHA: "abc123",
-		Findings:  findings,
-		Profile:   "standard",
-		Mode:      "changed",
-		Baseline:  "v1.0",
-		NewOnly:   true,
-		SinceRef:  "main",
-		Version:   "0.1.0",
-		Duration:  1500 * time.Millisecond,
-		ExitCode:  0,
+		Branch:      "main",
+		CommitSHA:   "abc123",
+		Findings:    findings,
+		Profile:     "standard",
+		Mode:        "changed",
+		Baseline:    "v1.0",
+		NewOnly:     true,
+		SinceRef:    "main",
+		Version:     "0.1.0",
+		Duration:    1500 * time.Millisecond,
+		ExitCode:    0,
 	}
 	riskScore := &risk.ScoreOutput{Score: 30, Level: "low"}
 
@@ -351,26 +357,26 @@ func TestJSONIncludesScanMetadataAndFingerprints(t *testing.T) {
 func TestSARIFIncludesFingerprintsAndScanMeta(t *testing.T) {
 	findings := []analysis.Finding{
 		{
-			Type:     analysis.TypeSAST,
-			Analyzer: "gosast-embedded",
-			RuleID:   "G104",
-			FilePath: "app/handler.go",
+			Type:      analysis.TypeSAST,
+			Analyzer:  "gosast-embedded",
+			RuleID:    "G104",
+			FilePath:  "app/handler.go",
 			LineStart: 10,
-			Evidence: "http.Get(url)",
-			Title:    "Errors unhandled",
-			Severity: analysis.SeverityMedium,
+			Evidence:  "http.Get(url)",
+			Title:     "Errors unhandled",
+			Severity:  analysis.SeverityMedium,
 		},
 	}
 	analysis.PopulateFingerprints(findings)
 
 	result := &analysis.AnalysisResult{
-		ScanID:    "sarif-scan-1",
+		ScanID:      "sarif-scan-1",
 		ProjectRoot: "/test/repo",
-		Profile:   "deep",
-		Mode:      "since",
-		SinceRef:  "main",
-		Version:   "0.1.0",
-		Findings:  findings,
+		Profile:     "deep",
+		Mode:        "since",
+		SinceRef:    "main",
+		Version:     "0.1.0",
+		Findings:    findings,
 	}
 	riskScore := &risk.ScoreOutput{Score: 40, Level: "medium"}
 
@@ -398,6 +404,9 @@ func TestSARIFIncludesFingerprintsAndScanMeta(t *testing.T) {
 		t.Fatalf("expected 1 invocation, got %d", len(run.Invocations))
 	}
 	inv := run.Invocations[0]
+	if !inv.ExecutionSuccessful {
+		t.Fatal("completed SARIF invocation should set executionSuccessful=true")
+	}
 	if inv.Properties == nil {
 		t.Fatal("SARIF invocation should have properties")
 	}
@@ -412,19 +421,121 @@ func TestSARIFIncludesFingerprintsAndScanMeta(t *testing.T) {
 	}
 }
 
+func TestSARIFInvocationReportsExecutionFailure(t *testing.T) {
+	result := &analysis.AnalysisResult{ExitCode: 3}
+	run := NewGenerator(result, nil).SARIF("test").Runs[0]
+	if len(run.Invocations) != 1 {
+		t.Fatalf("expected 1 invocation, got %d", len(run.Invocations))
+	}
+	if run.Invocations[0].ExecutionSuccessful {
+		t.Fatal("internal-error exit code should set executionSuccessful=false")
+	}
+}
+
+func TestSARIFScenarioMatrixValidatesAgainstOfficialSchema(t *testing.T) {
+	schemaDocument, err := jsonschema.UnmarshalJSON(bytes.NewReader(sarifSchemaJSON))
+	if err != nil {
+		t.Fatalf("parse embedded OASIS SARIF schema: %v", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft4)
+	const schemaLocation = "https://patchflow.dev/test/sarif-schema-2.1.0.json"
+	if err := compiler.AddResource(schemaLocation, schemaDocument); err != nil {
+		t.Fatalf("add OASIS SARIF schema: %v", err)
+	}
+	schema, err := compiler.Compile(schemaLocation)
+	if err != nil {
+		t.Fatalf("compile OASIS SARIF schema: %v", err)
+	}
+
+	now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
+	makeFinding := func(i int) analysis.Finding {
+		return analysis.Finding{
+			Type:      analysis.TypeSAST,
+			Analyzer:  "contract-test",
+			RuleID:    "PF-CONTRACT",
+			Title:     "Contract finding",
+			Severity:  analysis.SeverityHigh,
+			FilePath:  "src/app.go",
+			LineStart: i + 1,
+		}
+	}
+	findingHeavy := make([]analysis.Finding, 100)
+	for i := range findingHeavy {
+		findingHeavy[i] = makeFinding(i)
+	}
+
+	for _, tc := range []struct {
+		name                string
+		result              *analysis.AnalysisResult
+		executionSuccessful bool
+		wantResults         int
+	}{
+		{
+			name:                "empty",
+			result:              &analysis.AnalysisResult{StartedAt: now, CompletedAt: now, ExitCode: 0},
+			executionSuccessful: true,
+		},
+		{
+			name:                "clean",
+			result:              &analysis.AnalysisResult{ScanID: "clean", Version: "test", StartedAt: now, CompletedAt: now.Add(time.Second), Findings: []analysis.Finding{}, ExitCode: 0},
+			executionSuccessful: true,
+		},
+		{
+			name:                "finding-heavy",
+			result:              &analysis.AnalysisResult{ScanID: "findings", Version: "test", StartedAt: now, CompletedAt: now.Add(time.Second), Findings: findingHeavy, ExitCode: 1},
+			executionSuccessful: true,
+			wantResults:         len(findingHeavy),
+		},
+		{
+			name:                "failed",
+			result:              &analysis.AnalysisResult{ScanID: "failed", Version: "test", StartedAt: now, CompletedAt: now.Add(time.Second), ExitCode: 3},
+			executionSuccessful: false,
+		},
+		{
+			name:                "partial",
+			result:              &analysis.AnalysisResult{ScanID: "partial", Version: "test", StartedAt: now, CompletedAt: now.Add(time.Second), Findings: []analysis.Finding{makeFinding(0)}, ExitCode: 2},
+			executionSuccessful: false,
+			wantResults:         1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := NewGenerator(tc.result, nil).SARIF("test")
+			encoded, err := json.Marshal(report)
+			if err != nil {
+				t.Fatalf("marshal SARIF: %v", err)
+			}
+			var document any
+			if err := json.Unmarshal(encoded, &document); err != nil {
+				t.Fatalf("decode SARIF for schema validator: %v", err)
+			}
+			if err := schema.Validate(document); err != nil {
+				t.Fatalf("SARIF does not conform to the official OASIS 2.1.0 schema: %v", err)
+			}
+			run := report.Runs[0]
+			if len(run.Results) != tc.wantResults {
+				t.Fatalf("results = %d, want %d", len(run.Results), tc.wantResults)
+			}
+			if len(run.Invocations) != 1 || run.Invocations[0].ExecutionSuccessful != tc.executionSuccessful {
+				t.Fatalf("executionSuccessful = %v, want %v", run.Invocations, tc.executionSuccessful)
+			}
+		})
+	}
+}
+
 func TestMarkdownIncludesScanMetadata(t *testing.T) {
 	result := &analysis.AnalysisResult{
-		ScanID:    "md-scan-1",
+		ScanID:      "md-scan-1",
 		ProjectRoot: "/test/repo",
-		Branch:    "main",
-		CommitSHA: "abc123",
-		Profile:   "standard",
-		Mode:      "changed",
-		Baseline:  "v1.0",
-		NewOnly:   true,
-		SinceRef:  "main",
-		Version:   "0.1.0",
-		Duration:  1500 * time.Millisecond,
+		Branch:      "main",
+		CommitSHA:   "abc123",
+		Profile:     "standard",
+		Mode:        "changed",
+		Baseline:    "v1.0",
+		NewOnly:     true,
+		SinceRef:    "main",
+		Version:     "0.1.0",
+		Duration:    1500 * time.Millisecond,
 	}
 	riskScore := &risk.ScoreOutput{Score: 30, Level: "low"}
 

@@ -10,8 +10,10 @@ import (
 	"github.com/Patchflow-security/patchflow-cli/internal/analysis"
 	"github.com/Patchflow-security/patchflow-cli/internal/git"
 	"github.com/Patchflow-security/patchflow-cli/internal/manifest"
+	"github.com/Patchflow-security/patchflow-cli/internal/mavenres"
 	"github.com/Patchflow-security/patchflow-cli/internal/output"
 	osvclient "github.com/Patchflow-security/patchflow-cli/internal/osv"
+	"github.com/Patchflow-security/patchflow-cli/internal/registry"
 	"github.com/Patchflow-security/patchflow-cli/internal/sbom"
 	"github.com/spf13/cobra"
 )
@@ -66,6 +68,7 @@ func init() {
 
 func runDepsList(cmd *cobra.Command, _ []string) error {
 	formatter := FormatterFromContext(cmd.Context())
+	ctx := cmd.Context()
 
 	root, err := getRepoRoot()
 	if err != nil {
@@ -76,6 +79,12 @@ func runDepsList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return formatter.PrintError(fmt.Errorf("failed to parse manifests: %w", err))
 	}
+
+	// Resolve Maven transitive dependencies to match `scan run` behavior.
+	// Without this, `deps list` shows fewer deps than `scan run` because
+	// Maven's pom.xml only lists direct deps; transitives are resolved at
+	// build time.
+	deps = resolveMavenTransitivesIfNeeded(ctx, root, deps)
 
 	if output.IsJSON(formatter) {
 		return formatter.Print(deps)
@@ -120,6 +129,9 @@ func runDepsVulnerable(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return formatter.PrintError(fmt.Errorf("failed to parse manifests: %w", err))
 	}
+
+	// Resolve Maven transitives to match `scan run` behavior.
+	deps = resolveMavenTransitivesIfNeeded(ctx, root, deps)
 
 	if len(deps) == 0 {
 		_ = formatter.Print("No dependencies found.")
@@ -364,6 +376,7 @@ func truncateStr(s string, maxLen int) string {
 
 func runDepsLicenses(cmd *cobra.Command, _ []string) error {
 	formatter := FormatterFromContext(cmd.Context())
+	ctx := cmd.Context()
 
 	root, err := getRepoRoot()
 	if err != nil {
@@ -380,18 +393,47 @@ func runDepsLicenses(cmd *cobra.Command, _ []string) error {
 		return formatter.Print("No dependencies found.")
 	}
 
-	// Extract and classify licenses
-	licenseInfos := sbom.ExtractLicenses(deps)
-	summary := sbom.SummarizeLicenses(licenseInfos)
+	// Resolve Maven transitives to match `scan run` behavior.
+	deps = resolveMavenTransitivesIfNeeded(ctx, root, deps)
 
+	// Use the same enrichment pipeline as `scan run`: fetch missing license
+	// info from package registries (npm, PyPI, Maven, RubyGems, Go/GitHub)
+	// with disk caching so repeated scans skip network calls.
+	if !output.IsJSON(formatter) {
+		_ = formatter.Print(fmt.Sprintf("Fetching license info for %d dependencies...", len(deps)))
+	}
+	licenseAnalyzer := registry.NewLicenseAnalyzer()
+	licenseAnalyzer.SetCache(registry.NewCache(root))
+
+	licenseResult, err := licenseAnalyzer.Analyze(ctx, deps)
+	if err != nil {
+		// Fall back to manifest-only extraction if registry lookup fails
+		licenseInfos := sbom.ExtractLicenses(deps)
+		summary := sbom.SummarizeLicenses(licenseInfos)
+		return outputDepsLicenses(formatter, licenseInfos, summary)
+	}
+
+	licenseInfos := licenseResult.Infos
+	summary := licenseResult.Summary
+
+	if !output.IsJSON(formatter) {
+		_ = formatter.Print(fmt.Sprintf("  Enriched: %d | With license: %d | No license: %d",
+			licenseResult.Enriched, summary.WithLicense, summary.NoLicense))
+	}
+
+	return outputDepsLicenses(formatter, licenseInfos, summary)
+}
+
+// outputDepsLicenses renders the license report in JSON or text format.
+func outputDepsLicenses(formatter output.Formatter, licenseInfos []sbom.LicenseInfo, summary sbom.LicenseSummary) error {
 	if output.IsJSON(formatter) {
 		type licenseReport struct {
 			Summary struct {
-				Total      int                    `json:"total"`
-				WithLicense int                   `json:"with_license"`
-				NoLicense  int                    `json:"no_license"`
-				ByCategory map[string]int         `json:"by_category"`
-				ByRisk     map[string]int         `json:"by_risk"`
+				Total       int            `json:"total"`
+				WithLicense int            `json:"with_license"`
+				NoLicense   int            `json:"no_license"`
+				ByCategory  map[string]int `json:"by_category"`
+				ByRisk      map[string]int `json:"by_risk"`
 			} `json:"summary"`
 			Licenses []struct {
 				Name      string `json:"name"`
@@ -480,6 +522,31 @@ func runDepsLicenses(cmd *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+// resolveMavenTransitivesIfNeeded resolves Maven transitive dependencies
+// when the project contains Maven deps, matching `scan run` behavior.
+// This ensures `deps list`, `deps vulnerable`, and `deps licenses` report
+// the same dependency counts as `scan run`.
+func resolveMavenTransitivesIfNeeded(ctx context.Context, root string, deps []analysis.Dependency) []analysis.Dependency {
+	hasMaven := false
+	for _, d := range deps {
+		if d.Ecosystem == analysis.EcosystemMaven {
+			hasMaven = true
+			break
+		}
+	}
+	if !hasMaven {
+		return deps
+	}
+	resolver := mavenres.NewResolver()
+	resolver.SetCache(mavenres.NewCache(root))
+	resolver.SetRoot(root)
+	resolved, err := resolver.Resolve(ctx, deps)
+	if err == nil && len(resolved) > len(deps) {
+		return resolved
+	}
+	return deps
 }
 
 // Ensure context is used

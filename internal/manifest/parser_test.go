@@ -1382,6 +1382,8 @@ func TestValidatePomRelativePath_PathTraversal(t *testing.T) {
 		relPath string
 	}{
 		{"absolute path", childDir, "/etc/passwd/pom.xml"},
+		{"windows absolute path", childDir, `C:\secrets\pom.xml`},
+		{"windows UNC path", childDir, `\\server\share\pom.xml`},
 		{"escape root", childDir, "../../../etc/passwd/pom.xml"},
 		{"deep traversal", childDir, "../../../../../../tmp/pom.xml"},
 		{"not pom.xml", childDir, "../secret.txt"},

@@ -236,19 +236,48 @@ func (a *Analyzer) Analyze(ctx context.Context, root string) ([]analysis.Finding
 	// to be present in the program to resolve references.
 	prog := ssa.NewProgram(pkgs[0].Fset, ssa.InstantiateGenerics)
 
-	// Collect all packages (including dependencies) and create their SSA representations
+	// Collect all packages (including dependencies) and create their SSA representations.
+	// We track the *ssa.Package handles so we can build them individually
+	// instead of calling prog.Build() (which spawns internal goroutines that
+	// can panic without recovery).
 	allPkgs := collectAllPackages(pkgs)
+	var ssaPkgs []*ssa.Package
 	for _, p := range allPkgs {
 		if p.Types == nil {
 			continue
 		}
+		// Skip packages with type errors — the SSA builder panics on
+		// unresolved AST nodes. collectAllPackages already filters these,
+		// but double-check here for safety.
+		if len(p.Errors) > 0 {
+			continue
+		}
 		// Only create SSA for packages we have syntax and type info for.
 		// For dependency packages without syntax, CreatePackage handles nil syntax.
-		prog.CreatePackage(p.Types, p.Syntax, p.TypesInfo, true)
+		ssaPkg := prog.CreatePackage(p.Types, p.Syntax, p.TypesInfo, true)
+		if ssaPkg != nil {
+			ssaPkgs = append(ssaPkgs, ssaPkg)
+		}
 	}
 
-	// Build all packages — this must happen before analysis
-	prog.Build()
+	// Build each SSA package individually. We can't use prog.Build() because
+	// it spawns internal goroutines — a panic in a child goroutine cannot be
+	// caught by defer/recover in this goroutine. Building packages one at a
+	// time lets us recover from panics per-package and skip just the bad ones.
+	buildFailures := 0
+	for _, ssaPkg := range ssaPkgs {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					buildFailures++
+					a.logger.Printf("taint-ssa: SSA build panicked for package %s (skipping): %v", ssaPkg.Pkg.Path(), r)
+				}
+			}()
+			ssaPkg.Build()
+		}()
+	}
+
+	a.logger.Printf("taint-ssa: built %d SSA packages (%d failures)", len(ssaPkgs)-buildFailures, buildFailures)
 
 	var findings []analysis.Finding
 	for _, pkg := range pkgs {
@@ -272,6 +301,8 @@ func (a *Analyzer) Analyze(ctx context.Context, root string) ([]analysis.Finding
 
 // collectAllPackages walks the import graph and returns all packages
 // (including transitive dependencies) that have type information.
+// Packages with type errors are skipped to avoid SSA builder panics
+// (e.g., "no type for *ast.CallExpr" when type info is incomplete).
 func collectAllPackages(roots []*packages.Package) []*packages.Package {
 	seen := make(map[string]bool)
 	var result []*packages.Package
@@ -285,6 +316,13 @@ func collectAllPackages(roots []*packages.Package) []*packages.Package {
 			return
 		}
 		seen[p.PkgPath] = true
+		// Skip packages with type errors — the SSA builder panics on
+		// AST nodes that have no resolved type (e.g., unresolved function
+		// calls). This is common in projects with conditional compilation
+		// or platform-specific code.
+		if len(p.Errors) > 0 {
+			return
+		}
 		result = append(result, p)
 		for _, imp := range p.Imports {
 			walk(imp)

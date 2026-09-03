@@ -87,5 +87,14 @@ func BuildDefaultRegistry() *Registry {
 		)
 	}
 
+	// 7. Maturity overrides for noisy audit-only rules.
+	// G104 (Errors unhandled) is extremely noisy in Go code — intentionally
+	// ignoring errors with `_ =` is idiomatic. Downgrade to experimental so
+	// it only appears in audit profile (deep scan), not in standard/CI scans.
+	// Users can re-enable it via .patchflow/rules.yaml if needed.
+	if meta, ok := r.Get("G104"); ok {
+		meta.Maturity = MaturityExperimental
+	}
+
 	return r
 }

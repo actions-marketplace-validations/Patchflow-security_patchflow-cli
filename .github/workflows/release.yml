@@ -49,6 +49,29 @@ jobs:
           echo "publish=${PUBLISH}" >> "$GITHUB_OUTPUT"
           echo "Resolved tag=${TAG} version=${VERSION} publish=${PUBLISH}"
 
+      - name: Require a semantic tag on canonical main
+        if: steps.meta.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag is not semantic: $TAG" >&2
+            exit 1
+          fi
+          git fetch origin main --tags
+          TAG_COMMIT="$(git rev-parse "${TAG}^{commit}")"
+          CHECKED_OUT_COMMIT="$(git rev-parse HEAD)"
+          test "$TAG_COMMIT" = "$CHECKED_OUT_COMMIT"
+          git merge-base --is-ancestor "$TAG_COMMIT" origin/main
+          echo "Verified $TAG -> $TAG_COMMIT on canonical origin/main"
+
+      - name: Validate public-launch controls
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/validate-launch-kit.py --check-remote
+
       - name: Run tests
         run: go test $(go list ./... | grep -v /internal/integration) -timeout 5m
 

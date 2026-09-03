@@ -1,0 +1,16 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled:
+    - fastapi
+  disabled: []
+
+framework_extensions:
+  fastapi:
+    safe_patterns:
+      - pattern: "select\\("
+        reason: "SQLAlchemy ORM select() parameterizes comparisons; taint through .where() is safe"
+    custom_sanitizers:
+      - function: "sanitize_input"
+
+rules: []

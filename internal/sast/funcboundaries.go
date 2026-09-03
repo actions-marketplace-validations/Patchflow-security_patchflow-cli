@@ -20,19 +20,63 @@ type functionBoundary struct {
 // across supported languages. The regex is anchored at the start of the
 // trimmed line. Keywords use non-capturing groups so the first capture group
 // is always the function/method/class name.
+//
+// Supported languages: Python, Ruby, Go, JavaScript/TypeScript, Java, C#, PHP.
+// Each pattern is alternated with | so the regex engine tries them in order.
+// Order matters: more specific patterns (e.g., `def self.`) must come before
+// generic ones (e.g., `def`).
 var funcDefPatterns = regexp.MustCompile(
-	// Python/Ruby: def method_name, class ClassName
-	`^(?:def|class)\s+(\w+)` +
+	// Ruby: def self.method_name — MUST come before generic def to capture
+	// the method name, not "self".
+	`^def\s+(?:self\.)?(\w+)` +
+		// Python/Ruby: def method_name, class ClassName.
+		// Also handles `async def` (Python 3.5+).
+		`|^(?:async\s+)?(?:def|class)\s+(\w+)` +
+		// Java/C#/PHP class: public class Foo, internal class Bar, class Baz,
+		// final class Foo, abstract class Bar, sealed class Foo
+		`|^(?:public\s+|private\s+|protected\s+|internal\s+|final\s+|abstract\s+|sealed\s+|open\s+)?class\s+(\w+)` +
 		// Go: func methodName, func (recv) methodName
 		`|^func\s+(?:\([^)]*\)\s+)?(\w+)` +
-		// JavaScript/TypeScript: function methodName
-		`|^function\s+(\w+)` +
-		// Java: public/private/protected static? ReturnType methodName(
-		`|^(?:public|private|protected)\s+(?:static\s+)?(?:\w+(?:<[^>]*>)?\s+)?(\w+)\s*\(` +
-		// Ruby: def self.method_name (already covered by def above, but
-		// handle the self. prefix explicitly)
-		`|^def\s+(?:self\.)?(\w+)`,
+		// JavaScript/TypeScript: function methodName, async function methodName
+		`|^(?:async\s+)?function\s+(\w+)` +
+		// JS/TS arrow functions: const methodName = (args) => {  or  const methodName = async (args) =>
+		`|^(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|\w+)\s*=>` +
+		// JS/TS class methods: methodName(args) {  or  async methodName(args) {
+		// or  methodName(args): ReturnType {  (TypeScript)
+		// Requires the opening brace on the same line to avoid matching
+		// if-statements/for-loops. The optional `: ReturnType` between ) and {
+		// handles TypeScript return type annotations.
+		`|^(?:async\s+|static\s+|get\s+|set\s+|public\s+|private\s+|protected\s+)*(\w+)\s*\([^)]*\)\s*(?::\s*[^{]+)?\{` +
+		// Java/C#: public/private/protected/internal static? ReturnType? methodName(
+		// Handles `public void foo(`, `public foo(` (constructor), `public static void foo(`,
+		// C# `internal void foo(`, `async Task foo(`, etc.
+		`|^(?:public|private|protected|internal)\s+(?:(?:static|async|final|override|virtual|abstract|sealed|readonly)\s+)*(?:\w+(?:<[^>]*>|\[\])?\s+)?(\w+)\s*\(` +
+		// Java/C# package-private or implicit-visibility methods:
+		// void methodName(  or  static void methodName(  or  async Task methodName(
+		// Requires a known return type before the method name to avoid matching
+		// if/for/while/switch statements.
+		`|^(?:static\s+|async\s+|final\s+)*(?:void|int|long|float|double|boolean|bool|char|byte|short|string|String|var|Task|Task<[^>]*>|CompletableFuture<[^>]*>|Mono<[^>]*>|Flux<[^>]*>|IEnumerable<[^>]*>|List<[^>]*>|Map<[^>]*>|HashMap<[^>]*>|Set<[^>]*>|Optional<[^>]*>|Stream<[^>]*>|\w+<[^>]*>)\s+(\w+)\s*\(` +
+		// Java/C# package-private with custom class return type:
+		// User findById(  or  ResponseEntity<String> handle(
+		// Java/C# convention: class names start with uppercase. Control flow
+		// keywords (if, for, while, switch) are all lowercase, so [A-Z] safely
+		// distinguishes custom return types from control flow.
+		`|^(?:static\s+|async\s+|final\s+)*[A-Z]\w*(?:<[^>]*>)?\s+(\w+)\s*\(` +
+		// PHP: function methodName(  or  public function methodName(
+		`|^(?:public\s+|private\s+|protected\s+|static\s+)*\s*function\s+(\w+)`,
 )
+
+// controlFlowKeywords are JS/Java/C# keywords that look like function calls
+// (keyword followed by parens) but are NOT function definitions. These are
+// filtered out after regex matching to avoid false positives.
+var controlFlowKeywords = map[string]bool{
+	"if": true, "for": true, "while": true, "switch": true,
+	"catch": true, "return": true, "throw": true, "new": true,
+	"typeof": true, "instanceof": true, "delete": true, "void": true,
+	"await": true, "yield": true, "super": true, "this": true,
+	"else": true, "try": true, "finally": true, "do": true,
+	"require": true, "import": true, "export": true,
+}
 
 // detectFunctionBoundaries reads a source file and returns a sorted list
 // of function boundaries. Each boundary marks the start of a new function,
@@ -67,6 +111,11 @@ func detectFunctionBoundaries(path string) []functionBoundary {
 			}
 		}
 		if name == "" {
+			continue
+		}
+		// Filter out control flow keywords that match the function-call-like
+		// pattern (e.g., `if (...) {`, `for (...) {`) but are not functions.
+		if controlFlowKeywords[name] {
 			continue
 		}
 		boundaries = append(boundaries, functionBoundary{line: lineNum, name: name})

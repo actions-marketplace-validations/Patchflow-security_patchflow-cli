@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/Patchflow-security/patchflow-cli/internal/analysis"
 	fwpatterns "github.com/Patchflow-security/patchflow-cli/internal/sast/frameworks"
@@ -24,6 +25,12 @@ import (
 //
 // Only findings with a rule ID in the safePatterns map are considered.
 // Non-taint findings and findings without safe patterns are passed through.
+//
+// Interprocedural taint findings carry a "-IP" suffix on their rule ID
+// (e.g., PF-FASTAPI-SQLI-002-IP) while the safePatterns map is keyed by
+// the base rule ID (PF-FASTAPI-SQLI-002). We resolve the base ID before
+// lookup so safe patterns apply to both base and -IP variants. This
+// mirrors the -IP stripping in dedupBaseVsInterprocedural (B10).
 func suppressTaintWithSafePatterns(findings []analysis.Finding, safePatterns map[string][]fwpatterns.SafePattern, root string) []analysis.Finding {
 	if len(safePatterns) == 0 {
 		return findings
@@ -35,7 +42,10 @@ func suppressTaintWithSafePatterns(findings []analysis.Finding, safePatterns map
 		if f.RuleID == "" {
 			continue
 		}
-		if _, has := safePatterns[f.RuleID]; !has {
+		// Resolve the base rule ID (strip "-IP") so safe patterns registered
+		// against the base rule also suppress interprocedural variants.
+		baseID := stripIPSuffixFromRule(f.RuleID)
+		if _, has := safePatterns[baseID]; !has {
 			continue
 		}
 		// Only suppress taint-patterns and framework-taint findings
@@ -88,8 +98,9 @@ func suppressTaintWithSafePatterns(findings []analysis.Finding, safePatterns map
 				}
 			}
 
-			// Check if any safe pattern matches within the function's line range
-			patterns := safePatterns[f.RuleID]
+			// Check if any safe pattern matches within the function's line range.
+			// Use the base rule ID (strip "-IP") to match the safePatterns map keys.
+			patterns := safePatterns[stripIPSuffixFromRule(f.RuleID)]
 			for _, sp := range patterns {
 				if sp.Regex == nil {
 					continue
@@ -147,4 +158,147 @@ func safePatternMatchesInRange(re *regexp.Regexp, lines []string, start, end int
 		}
 	}
 	return false
+}
+
+// suppressTaintWithSafePatternsAndCWE extends suppressTaintWithSafePatterns with
+// CWE+language-based suppression. This handles the case where generic taint
+// rules (TP-RB001, TP-PY001) fire on code that a framework safe pattern should
+// protect. For example, a Rails .where( safe pattern registered for
+// PF-RAILS-SQLI-003 (CWE-89, ruby) should also suppress TP-RB001-IP findings
+// on the same code, since both rules detect SQL injection in Ruby.
+//
+// The algorithm:
+//  1. Run the existing rule-ID-based suppression (for PF-* findings)
+//  2. For remaining findings, look up safe patterns by CWE+language
+//  3. Apply the same function-boundary matching as the base suppression
+func suppressTaintWithSafePatternsAndCWE(
+	findings []analysis.Finding,
+	safePatterns map[string][]fwpatterns.SafePattern,
+	safePatternsByCWE map[string][]fwpatterns.SafePattern,
+	root string,
+) []analysis.Finding {
+	// Phase 1: existing rule-ID-based suppression
+	result := suppressTaintWithSafePatterns(findings, safePatterns, root)
+
+	// Phase 2: CWE+language-based suppression for remaining findings
+	if len(safePatternsByCWE) == 0 || len(result) == 0 {
+		return result
+	}
+
+	// Group remaining taint findings by file
+	byFile := make(map[string][]int)
+	for i, f := range result {
+		if f.CWEID == "" {
+			continue
+		}
+		// Only suppress taint-patterns and framework-taint findings
+		if f.Analyzer != "taint-patterns" && f.Analyzer != "framework-taint" {
+			continue
+		}
+		lang := languageFromFilePath(f.FilePath)
+		if lang == "" {
+			continue
+		}
+		key := f.CWEID + ":" + lang
+		if _, has := safePatternsByCWE[key]; !has {
+			continue
+		}
+		byFile[f.FilePath] = append(byFile[f.FilePath], i)
+	}
+
+	if len(byFile) == 0 {
+		return result
+	}
+
+	suppressed := make(map[int]bool)
+
+	for file, indices := range byFile {
+		fullPath := file
+		if !filepath.IsAbs(fullPath) {
+			fullPath = filepath.Join(root, file)
+		}
+
+		lines, err := readSourceLines(fullPath)
+		if err != nil {
+			continue
+		}
+
+		boundaries := detectFunctionBoundaries(fullPath)
+		if len(boundaries) == 0 {
+			continue
+		}
+
+		for _, idx := range indices {
+			f := result[idx]
+			fnBoundary := findFunctionForLine(boundaries, f.LineStart)
+			if fnBoundary == nil {
+				continue
+			}
+
+			fnStart := fnBoundary.line
+			fnEnd := len(lines)
+			for _, b := range boundaries {
+				if b.line > fnStart {
+					fnEnd = b.line - 1
+					break
+				}
+			}
+
+			lang := languageFromFilePath(f.FilePath)
+			key := f.CWEID + ":" + lang
+			patterns := safePatternsByCWE[key]
+			for _, sp := range patterns {
+				if sp.Regex == nil {
+					continue
+				}
+				if safePatternMatchesInRange(sp.Regex, lines, fnStart, fnEnd) {
+					suppressed[idx] = true
+					break
+				}
+			}
+		}
+	}
+
+	if len(suppressed) == 0 {
+		return result
+	}
+
+	final := make([]analysis.Finding, 0, len(result)-len(suppressed))
+	for i, f := range result {
+		if !suppressed[i] {
+			final = append(final, f)
+		}
+	}
+	return final
+}
+
+// languageFromFilePath infers the programming language from a file extension.
+// Returns the language name used in framework rules (e.g., "ruby", "python",
+// "java", "javascript", "typescript", "go", "php", "csharp").
+func languageFromFilePath(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".py":
+		return "python"
+	case ".rb":
+		return "ruby"
+	case ".java":
+		return "java"
+	case ".js", ".mjs", ".cjs":
+		return "javascript"
+	case ".ts":
+		return "typescript"
+	case ".tsx":
+		return "typescript"
+	case ".jsx":
+		return "javascript"
+	case ".go":
+		return "go"
+	case ".php":
+		return "php"
+	case ".cs":
+		return "csharp"
+	default:
+		return ""
+	}
 }

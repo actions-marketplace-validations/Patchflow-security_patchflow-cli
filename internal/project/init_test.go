@@ -126,3 +126,101 @@ func TestDefaultConfig(t *testing.T) {
 		t.Error("expected framework auto-detect enabled by default")
 	}
 }
+
+// TestInitCreatesRulesYAML verifies that Init generates a .patchflow/rules.yaml
+// with the expected structure (schema_version, frameworks, rules sections).
+// This is the first-run experience improvement: init should produce a working
+// config, not just empty directories.
+func TestInitCreatesRulesYAML(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	// rules.yaml must exist
+	if result.RulesPath == "" {
+		t.Fatal("expected RulesPath to be set")
+	}
+	if _, err := os.Stat(result.RulesPath); err != nil {
+		t.Errorf("rules.yaml not created at %s: %v", result.RulesPath, err)
+	}
+
+	data, err := os.ReadFile(result.RulesPath)
+	if err != nil {
+		t.Fatalf("failed to read rules.yaml: %v", err)
+	}
+	content := string(data)
+
+	// Must contain the key structural sections
+	mustContain := []string{
+		"schema_version:",
+		"frameworks:",
+		"auto_detect: true",
+		"rules:",
+	}
+	for _, s := range mustContain {
+		if !contains(content, s) {
+			t.Errorf("rules.yaml missing expected section %q\ncontent:\n%s", s, content)
+		}
+	}
+}
+
+// TestInitRulesYAMLWithDetectedFramework verifies that when a framework is
+// detected, the generated rules.yaml includes it in the enabled list and
+// generates a framework_extensions skeleton for it.
+func TestInitRulesYAMLWithDetectedFramework(t *testing.T) {
+	dir := t.TempDir()
+
+	// Wire a mock detector that always detects "fastapi"
+	SetFrameworkDetector(func(root string) *FrameworkDetectionResult {
+		return &FrameworkDetectionResult{
+			Frameworks: []FrameworkDetection{
+				{Name: "fastapi", Language: "python", Confidence: 0.9},
+			},
+		}
+	})
+	t.Cleanup(func() { SetFrameworkDetector(nil) })
+
+	result, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	if len(result.DetectedFrameworks) != 1 || result.DetectedFrameworks[0] != "fastapi" {
+		t.Errorf("expected detected frameworks [fastapi], got %v", result.DetectedFrameworks)
+	}
+
+	data, err := os.ReadFile(result.RulesPath)
+	if err != nil {
+		t.Fatalf("failed to read rules.yaml: %v", err)
+	}
+	content := string(data)
+
+	// Must include fastapi in enabled list
+	if !contains(content, "- fastapi") {
+		t.Errorf("rules.yaml should include fastapi in enabled list\ncontent:\n%s", content)
+	}
+	// Must include framework_extensions skeleton for fastapi
+	if !contains(content, "framework_extensions:") {
+		t.Errorf("rules.yaml should include framework_extensions skeleton\ncontent:\n%s", content)
+	}
+	if !contains(content, "fastapi:") {
+		t.Errorf("rules.yaml should include fastapi extension skeleton\ncontent:\n%s", content)
+	}
+}
+
+// contains is a simple substring check (avoids importing strings for one use).
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && indexOf(s, substr) >= 0
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}

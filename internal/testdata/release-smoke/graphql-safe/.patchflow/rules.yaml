@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [graphql]
+  disabled: []
+
+framework_extensions:
+  graphql:
+    safe_patterns:
+      - pattern: "select\\("
+        reason: "SQLAlchemy ORM select() parameterizes comparisons"
+
+rules: []

@@ -47,10 +47,36 @@ type StatusResponse struct {
 type APIClient interface {
 	PostContext(ctx context.Context, payload ContextPayload) (string, error)
 	PostReview(ctx context.Context, payload ReviewPayload) (string, error)
+	PostScanResults(ctx context.Context, payload json.RawMessage, projectID int, scanID string) (*ScanResultResponse, error)
+	PostPRReviewResults(ctx context.Context, payload json.RawMessage, opts PRReviewSubmitOpts) (*PRReviewResultResponse, error)
 	GetStatus(ctx context.Context, id string) (*StatusResponse, error)
 }
 
 var _ APIClient = (*Client)(nil)
+
+// ScanResultResponse is the backend's response to POST /api/v1/cli/scan-results.
+type ScanResultResponse struct {
+	ScanID     int    `json:"scan_id"`
+	ProjectID  int    `json:"project_id"`
+	Status     string `json:"status"`
+}
+
+// PRReviewSubmitOpts contains query parameters for POST /api/v1/cli/pr-review-results.
+type PRReviewSubmitOpts struct {
+	ProjectID  int    `json:"project_id"`
+	Repository string `json:"repository"`
+	PRNumber   int    `json:"pr_number"`
+	PRTitle    string `json:"pr_title"`
+	PRAuthor   string `json:"pr_author"`
+	PRURL      string `json:"pr_url"`
+}
+
+// PRReviewResultResponse is the backend's response to POST /api/v1/cli/pr-review-results.
+type PRReviewResultResponse struct {
+	PRReviewID int    `json:"pr_review_id"`
+	ProjectID  int    `json:"project_id"`
+	Status     string `json:"status"`
+}
 
 // PostContext submits a context payload and returns the job ID.
 func (c *Client) PostContext(ctx context.Context, payload ContextPayload) (string, error) {
@@ -60,6 +86,31 @@ func (c *Client) PostContext(ctx context.Context, payload ContextPayload) (strin
 // PostReview submits a review payload and returns the job ID.
 func (c *Client) PostReview(ctx context.Context, payload ReviewPayload) (string, error) {
 	return c.postJSON(ctx, "/api/v1/cli/review", payload)
+}
+
+// PostScanResults submits the full AnalysisResult JSON to the backend.
+// The backend maps findings to Vulnerability/ExternalFinding models.
+func (c *Client) PostScanResults(ctx context.Context, payload json.RawMessage, projectID int, scanID string) (*ScanResultResponse, error) {
+	path := fmt.Sprintf("/api/v1/cli/scan-results?project_id=%d", projectID)
+	if scanID != "" {
+		path += fmt.Sprintf("&scan_id=%s", scanID)
+	}
+	return postJSONRaw[ScanResultResponse](c, ctx, path, payload)
+}
+
+// PostPRReviewResults submits the pr-review JSON to the backend.
+func (c *Client) PostPRReviewResults(ctx context.Context, payload json.RawMessage, opts PRReviewSubmitOpts) (*PRReviewResultResponse, error) {
+	path := fmt.Sprintf("/api/v1/cli/pr-review-results?project_id=%d&repository=%s&pr_number=%d", opts.ProjectID, opts.Repository, opts.PRNumber)
+	if opts.PRTitle != "" {
+		path += "&pr_title=" + opts.PRTitle
+	}
+	if opts.PRAuthor != "" {
+		path += "&pr_author=" + opts.PRAuthor
+	}
+	if opts.PRURL != "" {
+		path += "&pr_url=" + opts.PRURL
+	}
+	return postJSONRaw[PRReviewResultResponse](c, ctx, path, payload)
 }
 
 // GetStatus retrieves the status of a job by ID.
@@ -120,6 +171,35 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any) (string
 		return "", err
 	}
 	return result.ID, nil
+}
+
+// postJSONRaw sends a raw JSON payload and decodes the response into T.
+// Used for endpoints that accept pre-marshaled JSON (e.g. AnalysisResult)
+// and return structured data (not just an ID).
+func postJSONRaw[T any](c *Client, ctx context.Context, path string, payload json.RawMessage) (*T, error) {
+	url := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.SetAuthHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, c.parseError(resp)
+	}
+
+	var result T
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (c *Client) parseError(resp *http.Response) *Error {

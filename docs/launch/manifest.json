@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "status": "preparing",
+  "issue": "https://github.com/Patchflow-security/patchflow-cli/issues/8",
+  "repository": "https://github.com/Patchflow-security/patchflow-cli",
+  "release": {
+    "tag": "v0.1.7",
+    "commit": "56d7909628b5b02756529bc4d79f2bed28b03642",
+    "launch_candidate": true,
+    "known_limitations": [],
+    "url": "https://github.com/Patchflow-security/patchflow-cli/releases/tag/v0.1.7",
+    "checksums_url": "https://github.com/Patchflow-security/patchflow-cli/releases/download/v0.1.7/checksums.txt",
+    "signature_url": "https://github.com/Patchflow-security/patchflow-cli/releases/download/v0.1.7/checksums.txt.sig"
+  },
+  "fixture": {
+    "commit": "97585554172cfec430527a1a0c6d62713a3557ef",
+    "archive_url": "https://github.com/Patchflow-security/patchflow-cli/archive/97585554172cfec430527a1a0c6d62713a3557ef.tar.gz",
+    "vulnerable_path": "examples/quickstart/vulnerable/app.py",
+    "clean_path": "examples/quickstart/clean/app.py",
+    "expected_rule": "PY001"
+  },
+  "demo": {
+    "runbook": "docs/launch/DEMO.md",
+    "transcript": "docs/launch/TRANSCRIPT.md",
+    "configuration": "none",
+    "offline": true,
+    "account_required": false,
+    "source_upload": false,
+    "recording_url": null,
+    "recording_duration_seconds": null
+  },
+  "launch_copy": [
+    "docs/launch/TECHNICAL_LAUNCH.md",
+    "docs/launch/SHOW_HN.md",
+    "docs/launch/COMMUNITY_VARIANTS.md"
+  ],
+  "claims_registry": "docs/claims/registry.json",
+  "verification": {
+    "command": "python3 scripts/validate-launch-kit.py --require-ready --check-remote",
+    "required_age_hours": 24,
+    "last_verified_at": null,
+    "verified_commit": null,
+    "owner_signoffs": {
+      "product": null,
+      "cli": null,
+      "website": null,
+      "launch_copy": null
+    }
+  }
+}

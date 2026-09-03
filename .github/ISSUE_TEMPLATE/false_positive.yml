@@ -1,0 +1,73 @@
+name: False positive
+description: Report a finding that is incorrect or creates avoidable scanner noise.
+title: "[False positive]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use synthetic or public code only. Never paste private source, real secrets, or an undisclosed vulnerability.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched for an existing report with the same rule and pattern.
+          required: true
+        - label: The reproducer is safe to publish and contains no sensitive data.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: PatchFlow version
+      placeholder: Output of patchflow version
+    validations:
+      required: true
+  - type: input
+    id: rule
+    attributes:
+      label: Rule or finding ID
+      placeholder: G404, PY001, framework rule ID, CVE, or secret pattern
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command and profile
+      placeholder: patchflow scan run --profile standard
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Minimal public fixture
+      description: Provide the smallest vulnerable-looking but safe example and its language/framework.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reasoning
+    attributes:
+      label: Why this is a false positive
+      description: Identify the sanitizer, safe API, control flow, context, or rule assumption that makes the finding incorrect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected detection behavior
+      description: Explain what should be suppressed and what nearby genuinely vulnerable pattern must still be detected.
+    validations:
+      required: true
+  - type: textarea
+    id: noise
+    attributes:
+      label: Noise impact
+      description: Estimate frequency or provide redacted counts if this affects more than one finding.
+  - type: checkboxes
+    id: suppression
+    attributes:
+      label: Temporary suppression
+      options:
+        - label: I confirmed whether a documented `patchflow:ignore` directive is an acceptable temporary workaround.

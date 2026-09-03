@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [symfony]
+  disabled: []
+
+framework_extensions:
+  symfony:
+    safe_patterns:
+      - pattern: "setParameter|->where\\("
+        reason: "Doctrine parameterized query"
+
+rules: []

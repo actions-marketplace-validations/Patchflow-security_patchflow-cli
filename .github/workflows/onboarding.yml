@@ -1,0 +1,183 @@
+name: Five-minute onboarding
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/onboarding.yml'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'examples/quickstart/**'
+      - 'docs/claims/**'
+      - 'docs/launch/FRESH_USER_SESSIONS.md'
+      - 'docs/launch/onboarding-session-results.json'
+      - 'scripts/install.*'
+      - 'scripts/verify-quickstart.*'
+      - 'scripts/validate-claims.py'
+      - 'scripts/validate-onboarding-sessions.py'
+      - 'scripts/tests/**'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onboarding-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  claim-registry:
+    name: Claim registry
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Reject stale or incomplete claims
+        run: |
+          python3 scripts/validate-claims.py
+          python3 scripts/validate-onboarding-sessions.py
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+  native-install-and-quickstart:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            family: unix
+          - name: Linux arm64
+            runner: ubuntu-24.04-arm
+            family: unix
+          - name: macOS Intel
+            runner: macos-15-intel
+            family: unix
+          - name: macOS arm64
+            runner: macos-15
+            family: unix
+          - name: Windows x64
+            runner: windows-2025
+            family: windows
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.4'
+          cache: true
+
+      - name: Build candidate (Unix)
+        if: matrix.family == 'unix'
+        run: go build -o patchflow-current .
+
+      - name: Clean-install published release (Unix)
+        if: matrix.family == 'unix'
+        shell: bash
+        run: |
+          echo "PATCHFLOW_ONBOARDING_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          INSTALL_DIR="$RUNNER_TEMP/patchflow-release/bin" ./scripts/install.sh --version v0.1.6
+          "$RUNNER_TEMP/patchflow-release/bin/patchflow" doctor --json > "$RUNNER_TEMP/release-doctor.json"
+
+      - name: Verify candidate quickstart (Unix)
+        if: matrix.family == 'unix'
+        shell: bash
+        run: ./scripts/verify-quickstart.sh "$GITHUB_WORKSPACE/patchflow-current" "$GITHUB_WORKSPACE/onboarding-evidence.json"
+
+      - name: Build candidate (Windows)
+        if: matrix.family == 'windows'
+        run: go build -o patchflow-current.exe .
+
+      - name: Clean-install published release (Windows)
+        if: matrix.family == 'windows'
+        shell: pwsh
+        run: |
+          "PATCHFLOW_ONBOARDING_STARTED_AT=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          ./scripts/install.ps1 -Version v0.1.6 -InstallDir "$env:RUNNER_TEMP\patchflow-release\bin"
+          & "$env:RUNNER_TEMP\patchflow-release\bin\patchflow.exe" doctor --json | Out-File "$env:RUNNER_TEMP\release-doctor.json" -Encoding utf8
+
+      - name: Verify candidate quickstart (Windows)
+        if: matrix.family == 'windows'
+        shell: pwsh
+        run: ./scripts/verify-quickstart.ps1 -Binary "$env:GITHUB_WORKSPACE\patchflow-current.exe" -Evidence "$env:GITHUB_WORKSPACE\onboarding-evidence.json"
+
+      - name: Upload onboarding evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: onboarding-${{ matrix.name }}-${{ github.sha }}
+          path: onboarding-evidence.json
+          retention-days: 30
+
+  container-quickstart:
+    name: Container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Build container
+        run: docker build --build-arg VERSION=onboarding-${GITHUB_SHA::7} -t patchflow-onboarding .
+
+      - name: Verify vulnerable and clean fixtures
+        shell: bash
+        run: |
+          cp -R examples/quickstart/vulnerable "$RUNNER_TEMP/vulnerable"
+          cp -R examples/quickstart/clean "$RUNNER_TEMP/clean"
+          git -C "$RUNNER_TEMP/vulnerable" init -q
+          git -C "$RUNNER_TEMP/clean" init -q
+          git -C "$RUNNER_TEMP/vulnerable" -c user.name=PatchFlow -c user.email=demo@patchflow.dev add .
+          git -C "$RUNNER_TEMP/vulnerable" -c user.name=PatchFlow -c user.email=demo@patchflow.dev commit -qm fixture
+          git -C "$RUNNER_TEMP/clean" -c user.name=PatchFlow -c user.email=demo@patchflow.dev add .
+          git -C "$RUNNER_TEMP/clean" -c user.name=PatchFlow -c user.email=demo@patchflow.dev commit -qm fixture
+          chmod -R a+rwX "$RUNNER_TEMP/vulnerable" "$RUNNER_TEMP/clean"
+
+          start=$SECONDS
+          docker run --rm -v "$RUNNER_TEMP/vulnerable:/repo" -w /repo patchflow-onboarding \
+            scan run --offline --no-licenses --no-reachability --json --quiet > vulnerable.json
+          grep -q PY001 vulnerable.json
+
+          docker run --rm -v "$RUNNER_TEMP/clean:/repo" -w /repo patchflow-onboarding \
+            scan run --offline --no-licenses --no-reachability --json --quiet > clean.json
+          if grep -q PY001 clean.json; then
+            echo 'Clean container fixture unexpectedly produced PY001' >&2
+            exit 1
+          fi
+
+          elapsed=$((SECONDS - start))
+          test "$elapsed" -lt 300
+          jq -n \
+            --argjson elapsed "$elapsed" \
+            '{schema_version:"1.0",os:"container",architecture:"linux/amd64",elapsed_seconds:$elapsed,target_seconds:300,timing_scope:"container_run_to_completed_quickstart",vulnerable_fixture:{expected_rule:"PY001",result:"pass"},clean_fixture:{forbidden_rule:"PY001",result:"pass"},login_required:false,source_upload:false}' \
+            > onboarding-container-evidence.json
+
+      - name: Upload container evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: onboarding-container-${{ github.sha }}
+          path: onboarding-container-evidence.json
+          retention-days: 30
+
+  onboarding-gate:
+    name: Five-minute onboarding gate
+    runs-on: ubuntu-slim
+    if: always()
+    needs:
+      - claim-registry
+      - native-install-and-quickstart
+      - container-quickstart
+    steps:
+      - name: Require every onboarding target
+        env:
+          CLAIMS_RESULT: ${{ needs.claim-registry.result }}
+          NATIVE_RESULT: ${{ needs.native-install-and-quickstart.result }}
+          CONTAINER_RESULT: ${{ needs.container-quickstart.result }}
+        run: |
+          test "$CLAIMS_RESULT" = success
+          test "$NATIVE_RESULT" = success
+          test "$CONTAINER_RESULT" = success

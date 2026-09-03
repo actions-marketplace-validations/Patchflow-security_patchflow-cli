@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "policy": {
+    "owner": "PatchFlow maintainers",
+    "maximum_age_days": 90,
+    "rule": "Only entries with status=approved may be used as launch claims. Pending and hold entries must not appear as promotional facts."
+  },
+  "claims": [
+    {
+      "id": "local-scan-no-account-or-upload",
+      "type": "capability",
+      "statement": "Core local scans require no PatchFlow account and do not upload source code when --submit is absent.",
+      "status": "approved",
+      "scope": "patchflow scan run without --submit",
+      "evidence": [
+        "cmd/scan_run.go",
+        "scripts/verify-quickstart.sh",
+        ".github/workflows/onboarding.yml"
+      ],
+      "limitations": "OSV network queries occur unless --offline is used. Backend submission is an explicit --submit path.",
+      "owner": "CLI",
+      "last_verified": "2026-07-18"
+    },
+    {
+      "id": "release-platforms-v0-1-6",
+      "type": "compatibility",
+      "statement": "Release v0.1.6 provides macOS and Linux archives for x86_64 and arm64, plus Windows x86_64 and arm64 archives.",
+      "status": "approved",
+      "scope": "v0.1.6 release artifacts",
+      "evidence": [
+        "https://github.com/Patchflow-security/patchflow-cli/releases/tag/v0.1.6",
+        ".goreleaser.yml",
+        ".github/workflows/onboarding.yml"
+      ],
+      "limitations": "The CI onboarding gate executes Windows x64; Windows arm64 remains an artifact-build target, not an onboarding acceptance platform.",
+      "owner": "Release engineering",
+      "last_verified": "2026-07-18"
+    },
+    {
+      "id": "five-minute-automated-onboarding",
+      "type": "metric",
+      "statement": "The automated install and quickstart path completes in under five minutes on the launch platform matrix.",
+      "status": "pending",
+      "scope": "CI matrix and public quickstart fixture",
+      "evidence": [
+        ".github/workflows/onboarding.yml",
+        "scripts/verify-quickstart.sh",
+        "scripts/verify-quickstart.ps1"
+      ],
+      "methodology": "Start immediately before the published-release installer, then time doctor, vulnerable scan, clean scan, explanation, and SARIF generation with the candidate binary; enforce elapsed_seconds < 300 and upload per-platform JSON. Candidate compilation is excluded.",
+      "limitations": "This is automation evidence, not a substitute for five fresh-user sessions.",
+      "owner": "Product and CLI",
+      "last_verified": "2026-07-18"
+    },
+    {
+      "id": "benchmark-v1",
+      "type": "metric",
+      "statement": "Historical v1 benchmark metrics published on 2026-06-27.",
+      "status": "hold",
+      "scope": "PatchFlow CLI commit 4ba3bb6 only",
+      "evidence": [
+        "https://github.com/Patchflow-security/patchflow-benchmarks/blob/main/reports/BENCHMARK_REPORT_v1.0.md"
+      ],
+      "methodology": "Use the commands, suites, environment, and raw result paths documented in the benchmark report.",
+      "limitations": "The report contains internal inconsistencies in historical-repository count, LOC, and average timing. Do not use its numbers in launch copy until a reproducible rerun and reviewed correction are published.",
+      "owner": "Security research",
+      "last_verified": "2026-07-18"
+    },
+    {
+      "id": "fresh-user-five-minute-success",
+      "type": "metric",
+      "statement": "At least four of five fresh users reach a useful finding in under five minutes.",
+      "status": "pending",
+      "scope": "Five moderated onboarding sessions",
+      "evidence": [
+        "docs/launch/FRESH_USER_SESSIONS.md",
+        "docs/launch/SESSION_NOTES_TEMPLATE.md",
+        "docs/launch/onboarding-session-results.json"
+      ],
+      "methodology": "Start timing before installation; stop when the participant can identify and explain one useful result. Record failures and anonymize notes.",
+      "limitations": "No sessions have been claimed or counted by automation.",
+      "owner": "Product",
+      "last_verified": "2026-07-18"
+    }
+  ]
+}

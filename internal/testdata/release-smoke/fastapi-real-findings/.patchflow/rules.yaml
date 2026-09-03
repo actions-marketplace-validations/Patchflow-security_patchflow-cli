@@ -1,0 +1,38 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled:
+    - fastapi
+  disabled: []
+
+framework_extensions:
+  fastapi:
+    safe_patterns:
+      - pattern: "select\\("
+        reason: "SQLAlchemy ORM select() parameterizes comparisons"
+
+rules:
+  - id: REAL-001
+    title: verify=False / ssl=False on outbound HTTP client
+    pattern: "verify\\s*=\\s*False|ssl\\s*=\\s*False"
+    severity: high
+    languages: [python]
+    confidence: high
+    cwe: "CWE-295"
+    fix_hint: "Never disable TLS verification; pin CA bundle instead"
+  - id: REAL-002
+    title: Weak hash algorithm (sha1) in security context
+    pattern: "hashlib\\.(md5|sha1)"
+    severity: high
+    languages: [python]
+    confidence: high
+    cwe: "CWE-327"
+    fix_hint: "Use SHA-256 or stronger"
+  - id: REAL-003
+    title: f-string interpolated into sqlalchemy text()
+    pattern: "text\\(f['\"]"
+    severity: high
+    languages: [python]
+    confidence: high
+    cwe: "CWE-89"
+    fix_hint: "Use bound parameters"

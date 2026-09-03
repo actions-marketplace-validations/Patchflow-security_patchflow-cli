@@ -21,12 +21,15 @@ import (
 var (
 	reportFormat string
 	reportOutput string
+	reportRescan bool
 )
 
 var reportCmd = &cobra.Command{
 	Use:   "report",
 	Short: "Generate a security analysis report",
-	Long: `Run a full analysis and generate a report in the specified format.
+	Long: `Generate a report from the last scan results. If no prior scan exists
+(or --rescan is used), a fresh scan is run first.
+
 Supported formats: markdown, json, sarif.
 
 The report includes all findings (SCA, SAST, secrets), dependency list,
@@ -37,6 +40,7 @@ risk score breakdown, and recommendations.`,
 func init() {
 	reportCmd.Flags().StringVar(&reportFormat, "format", "markdown", "Report format: markdown, json, sarif")
 	reportCmd.Flags().StringVar(&reportOutput, "output", "", "Output file path (stdout if omitted)")
+	reportCmd.Flags().BoolVar(&reportRescan, "rescan", false, "Force a fresh scan instead of using cached results")
 
 	rootCmd.AddCommand(reportCmd)
 }
@@ -58,6 +62,20 @@ func runReport(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return formatter.PrintError(err)
 	}
+
+	// Try to load the last scan result from cache (unless --rescan is set).
+	// This avoids re-running the full SCA + SAST + reachability pipeline when
+	// the user just wants to reformat the existing results.
+	if !reportRescan {
+		cachedResult, cachedRisk := loadLastScanResult(repo.Root)
+		if cachedResult != nil {
+			if !output.IsJSON(formatter) {
+				_ = formatter.Print("Using cached scan results (use --rescan to force a fresh scan)")
+			}
+			return generateReportFromResult(formatter, repo, cachedResult, cachedRisk)
+		}
+	}
+
 	if isGitRepo {
 		_ = repo.DetectChangedFiles()
 		_ = repo.DetectDiffStats()
@@ -85,6 +103,7 @@ func runReport(cmd *cobra.Command, _ []string) error {
 		_ = formatter.Print("Running SAST analysis...")
 	}
 	sastRunner := sast.NewRunner()
+	sastRunner.Quiet = output.IsJSON(formatter) || QuietFromContext(ctx)
 	sastResult, err := sastRunner.Analyze(ctx, repo.Root)
 	if err == nil {
 		allFindings = append(allFindings, sastResult.Findings...)
@@ -140,7 +159,16 @@ func runReport(cmd *cobra.Command, _ []string) error {
 		Analyzers:    analyzersRun,
 	}
 
-	gen := report.NewGenerator(result, &riskScore)
+	// Save the result for future `patchflow report` calls.
+	saveLastScanResult(repo.Root, result, &riskScore)
+
+	return generateReportFromResult(formatter, repo, result, &riskScore)
+}
+
+// generateReportFromResult renders a report from an AnalysisResult in the
+// requested format. Used by both `patchflow report` (fresh scan and cached).
+func generateReportFromResult(formatter output.Formatter, repo *git.Repository, result *analysis.AnalysisResult, riskScore *risk.ScoreOutput) error {
+	gen := report.NewGenerator(result, riskScore)
 
 	// Normalize format
 	fmtStr := reportFormat

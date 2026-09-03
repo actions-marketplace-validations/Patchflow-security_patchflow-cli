@@ -1,0 +1,13 @@
+schema_version: "1.0"
+frameworks:
+  auto_detect: true
+  enabled: [flask]
+  disabled: []
+
+framework_extensions:
+  flask:
+    safe_patterns:
+      - pattern: "select\\("
+        reason: "ORM parameterization"
+
+rules: []

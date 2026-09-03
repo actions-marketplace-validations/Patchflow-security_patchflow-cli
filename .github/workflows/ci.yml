@@ -55,6 +55,49 @@ jobs:
           ./patchflow version
           ./patchflow --help > /dev/null
 
+      - name: Smoke test (config round-trip + scan)
+        shell: bash
+        run: |
+          # Verify the unified --config flag works end-to-end (B11.5.4).
+          # This catches the class of bug where rulesconfig and customrules
+          # disagree on the rules: schema, breaking custom rule loading.
+          mkdir -p /tmp/ci-smoke/.patchflow
+          cat > /tmp/ci-smoke/.patchflow/rules.yaml << 'YAML'
+          schema_version: "1.0"
+          frameworks:
+            auto_detect: true
+            enabled: []
+            disabled: []
+          rules:
+            - id: CISMOKE-001
+              title: CI smoke test rule
+              pattern: "eval\\("
+              severity: high
+              languages: [python]
+              confidence: high
+              cwe: "CWE-95"
+          YAML
+          echo 'user = input(); eval(user)' > /tmp/ci-smoke/vuln.py
+          cd /tmp/ci-smoke && git init -q
+          # Run scan with --config and verify JSON output + custom rule fires.
+          # PATCHFLOW_BIN points to the binary built in the previous step.
+          OUTPUT=$("$GITHUB_WORKSPACE/patchflow" scan run \
+            --config .patchflow/rules.yaml \
+            --json --quiet --offline --no-licenses --no-reachability 2>&1)
+          echo "$OUTPUT" | grep -q "CISMOKE-001" || {
+            echo "FAIL: custom rule CISMOKE-001 not found in output"
+            echo "$OUTPUT"
+            exit 1
+          }
+          echo "PASS: --config smoke test — custom rule fired"
+          # Verify doctor round-trip check passes
+          "$GITHUB_WORKSPACE/patchflow" doctor --json 2>&1 |
+            python3 -c 'import json, sys; raise SystemExit(json.load(sys.stdin).get("config_round_trip_ok") is not True)' || {
+            echo "FAIL: doctor config_round_trip_ok is not true"
+            exit 1
+          }
+          echo "PASS: doctor config round-trip check"
+
       - name: Upload binary artifact
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

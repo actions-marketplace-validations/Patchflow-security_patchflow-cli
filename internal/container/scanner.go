@@ -1,128 +1,174 @@
-// Package container provides container image scanning by wrapping Trivy as
-// an external analyzer. This gives PatchFlow full container image scanning
-// capabilities (OS packages, language dependencies, misconfigurations)
-// without reimplementing Trivy's image analysis engine.
+// Package container provides embedded container image scanning using the
+// PatchFlow native image scanner. No external tools (Trivy, etc.) are required.
 //
-// The strategy is the same as for gosec, bandit, semgrep, gitleaks, and
-// checkov: leverage the best-in-class external tool when available, and
-// present results through PatchFlow's unified finding format.
+// The scanner pulls images via Docker Registry API v2 (or local Docker/Podman
+// daemon, tarballs, OCI layouts), reconstructs the layered filesystem,
+// catalogs OS and language packages, and optionally matches vulnerabilities
+// against a local SQLite vulnerability database.
 package container
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Patchflow-security/patchflow-cli/internal/analysis"
+	"github.com/Patchflow-security/patchflow-cli/internal/imagescan/config"
+	"github.com/Patchflow-security/patchflow-cli/internal/imagescan/model"
+	"github.com/Patchflow-security/patchflow-cli/internal/imagescan/scan"
+	"github.com/Patchflow-security/patchflow-cli/internal/imagescan/vuln/db"
+	"github.com/Patchflow-security/patchflow-cli/internal/imagescan/vuln/matcher"
 )
 
-// ImageScanner scans container images for vulnerabilities and misconfigurations.
+// ImageScanner scans container images using the embedded PatchFlow scanner.
 type ImageScanner struct {
-	TrivyBinary string
 	Timeout     time.Duration
+	Platform    string
+	Input       string // local tarball or OCI layout path
+	WithVulns   bool   // enable vulnerability matching
+	scanner     *scan.Scanner
 }
 
-// NewImageScanner creates a container image scanner that uses Trivy.
+// NewImageScanner creates an embedded container image scanner.
 func NewImageScanner() *ImageScanner {
 	return &ImageScanner{
-		TrivyBinary: "trivy",
-		Timeout:     10 * time.Minute,
+		Timeout:   10 * time.Minute,
+		WithVulns: true,
+		scanner:   scan.New(),
 	}
 }
 
-// IsAvailable returns true if Trivy is installed and available.
+// IsAvailable returns true — the embedded scanner is always available.
 func (s *ImageScanner) IsAvailable() bool {
-	_, err := exec.LookPath(s.TrivyBinary)
-	return err == nil
+	return true
 }
 
 // ScanResult holds the output of a container image scan.
 type ScanResult struct {
 	Findings []analysis.Finding
+	Packages int
 	Target   string
+	Image    model.ImageIdentity
+	OS       *model.OperatingSystem
+	Raw      *model.ScanResult
 }
 
-// ScanImage scans a container image for vulnerabilities and misconfigurations.
-// The image can be a local image (e.g., "myapp:latest") or a remote image
-// from a registry (e.g., "nginx:1.21").
+// ScanImage scans a container image for vulnerabilities, secrets,
+// hardening issues, and misconfigurations. The image can be a local image
+// (e.g., "myapp:latest"), a remote registry image (e.g., "nginx:1.21"),
+// or a local tarball/OCI layout (when Input is set).
 func (s *ImageScanner) ScanImage(ctx context.Context, image string) (*ScanResult, error) {
-	if !s.IsAvailable() {
-		return nil, fmt.Errorf("trivy is not installed — install it to enable container image scanning")
-	}
 	if err := validateImageRef(image); err != nil {
 		return nil, err
 	}
 
-	// Run trivy image --format json --quiet <image>
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-	// Trivy is an intentional external scanner invocation; arguments are not passed through a shell.
-	cmd := exec.CommandContext(ctx, s.TrivyBinary, "image", "--format", "json", "--quiet", "--", image) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-	output, err := cmd.Output()
+	// Optionally attach vulnerability matcher
+	if s.WithVulns {
+		if m, err := buildMatcher(); err == nil {
+			s.scanner.Matcher = m
+		}
+	}
+
+	req := scan.Request{
+		Ref:      image,
+		Input:    s.Input,
+		Platform: s.Platform,
+	}
+
+	output, err := s.scanner.Scan(ctx, req)
 	if err != nil {
-		// Trivy returns non-zero when vulnerabilities are found
-		if len(output) == 0 {
-			return nil, fmt.Errorf("trivy image scan failed: %w", err)
-		}
+		return nil, fmt.Errorf("image scan failed: %w", err)
 	}
+	defer output.Close()
 
-	// Parse Trivy JSON output
-	var trivyReport trivyImageReport
-	if err := json.Unmarshal(output, &trivyReport); err != nil {
-		return nil, fmt.Errorf("failed to parse trivy output: %w", err)
-	}
-
-	var findings []analysis.Finding
-	for _, result := range trivyReport.Results {
-		// Vulnerabilities
-		for _, vuln := range result.Vulnerabilities {
-			finding := analysis.Finding{
-				ID:             fmt.Sprintf("container-vuln-%s-%s-%s", vuln.VulnerabilityID, vuln.PkgName, vuln.InstalledVersion),
-				Type:           analysis.TypeSCA,
-				Analyzer:       "trivy-image",
-				Severity:       normalizeTrivySeverity(vuln.Severity),
-				Confidence:     analysis.ConfidenceHigh,
-				Title:          fmt.Sprintf("%s: %s in %s@%s", vuln.VulnerabilityID, vuln.PkgName, vuln.PkgName, vuln.InstalledVersion),
-				Description:    vuln.Description,
-				PackageName:    vuln.PkgName,
-				PackageVersion: vuln.InstalledVersion,
-				FixedVersion:   vuln.FixedVersion,
-				CVEID:          vuln.VulnerabilityID,
-				FilePath:       vuln.PkgPath,
-				AdvisoryURL:    vuln.PrimaryURL,
-				Recommendation: generateFixRecommendation(vuln),
-				DetectedAt:     time.Now(),
-			}
-			findings = append(findings, finding)
-		}
-
-		// Misconfigurations
-		for _, misconf := range result.Misconfigurations {
-			finding := analysis.Finding{
-				ID:             fmt.Sprintf("container-misconf-%s-%s-%d", misconf.ID, result.Target, misconf.StartLine),
-				Type:           analysis.TypeIaC,
-				Analyzer:       "trivy-image",
-				Severity:       normalizeTrivySeverity(misconf.Severity),
-				Confidence:     analysis.ConfidenceHigh,
-				Title:          misconf.Title,
-				Description:    misconf.Description,
-				FilePath:       result.Target,
-				LineStart:      misconf.StartLine,
-				LineEnd:        misconf.EndLine,
-				RuleID:         misconf.ID,
-				Recommendation: misconf.Resolution,
-				DetectedAt:     time.Now(),
-			}
-			findings = append(findings, finding)
-		}
-	}
+	result := output.Result
+	findings := convertFindings(result.Findings)
 
 	return &ScanResult{
 		Findings: findings,
-		Target:   trivyReport.ArtifactName,
+		Packages: len(result.Packages),
+		Target:   image,
+		Image:    result.Image,
+		OS:       result.OS,
+		Raw:      result,
 	}, nil
+}
+
+// buildMatcher creates a vulnerability matcher from the local SQLite DB.
+func buildMatcher() (scan.VulnMatcher, error) {
+	dbPath := config.VulnDBPath()
+	database, err := db.OpenReadOnly(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return matcher.New(database, 70), nil
+}
+
+// convertFindings converts image scanner findings to patchflow-cli analysis.Finding.
+func convertFindings(imgFindings []model.Finding) []analysis.Finding {
+	var findings []analysis.Finding
+	for _, f := range imgFindings {
+		finding := analysis.Finding{
+			ID:             f.ID,
+			Type:           convertFindingType(f.Type),
+			Analyzer:       "patchflow-image",
+			Severity:       convertSeverity(f.Severity),
+			Confidence:     convertConfidence(f.Confidence),
+			Title:          f.Title,
+			Description:    f.Description,
+			PackageName:    f.PackageName,
+			PackageVersion: f.PackageVersion,
+			FixedVersion:   f.FixedVersion,
+			CVEID:          f.VulnerabilityID,
+			Recommendation: f.Recommendation,
+			AdvisoryURL:    f.AdvisoryURL,
+			DetectedAt:     f.DetectedAt,
+		}
+		if f.LayerDigest != "" {
+			finding.FilePath = f.LayerDigest
+		}
+		findings = append(findings, finding)
+	}
+	return findings
+}
+
+func convertFindingType(t model.FindingType) analysis.FindingType {
+	switch t {
+	case model.FindingTypeVulnerability:
+		return analysis.TypeSCA
+	case model.FindingTypeSecret:
+		return analysis.TypeSecret
+	case model.FindingTypeHardening, model.FindingTypeMisconfig:
+		return analysis.TypeIaC
+	default:
+		return analysis.TypeSAST
+	}
+}
+
+func convertSeverity(s model.Severity) analysis.Severity {
+	switch s {
+	case model.SeverityCritical:
+		return analysis.SeverityCritical
+	case model.SeverityHigh:
+		return analysis.SeverityHigh
+	case model.SeverityMedium:
+		return analysis.SeverityMedium
+	case model.SeverityLow:
+		return analysis.SeverityLow
+	default:
+		return analysis.SeverityInfo
+	}
+}
+
+func convertConfidence(c model.Confidence) analysis.Confidence {
+	if c >= 80 {
+		return analysis.ConfidenceHigh
+	}
+	if c >= 50 {
+		return analysis.ConfidenceMedium
+	}
+	return analysis.ConfidenceLow
 }
 
 func validateImageRef(image string) error {
@@ -136,68 +182,4 @@ func validateImageRef(image string) error {
 		return fmt.Errorf("container image reference contains invalid control characters")
 	}
 	return nil
-}
-
-// generateFixRecommendation generates a fix recommendation for a vulnerability.
-func generateFixRecommendation(v trivyVulnerability) string {
-	if v.FixedVersion != "" {
-		return fmt.Sprintf("Upgrade %s from %s to %s or later", v.PkgName, v.InstalledVersion, v.FixedVersion)
-	}
-	return fmt.Sprintf("No fix available for %s@%s. Consider replacing this package or mitigating the vulnerability.", v.PkgName, v.InstalledVersion)
-}
-
-// normalizeTrivySeverity converts Trivy severity strings to analysis.Severity.
-func normalizeTrivySeverity(s string) analysis.Severity {
-	switch s {
-	case "CRITICAL":
-		return analysis.SeverityCritical
-	case "HIGH":
-		return analysis.SeverityHigh
-	case "MEDIUM":
-		return analysis.SeverityMedium
-	case "LOW":
-		return analysis.SeverityLow
-	case "UNKNOWN":
-		return analysis.SeverityInfo
-	default:
-		return analysis.SeverityInfo
-	}
-}
-
-// ─── Trivy JSON types ────────────────────────────────────────────────
-
-type trivyImageReport struct {
-	ArtifactName string        `json:"ArtifactName"`
-	ArtifactType string        `json:"ArtifactType"`
-	Results      []trivyResult `json:"Results"`
-}
-
-type trivyResult struct {
-	Target            string               `json:"Target"`
-	Class             string               `json:"Class"`
-	Type              string               `json:"Type"`
-	Vulnerabilities   []trivyVulnerability `json:"Vulnerabilities"`
-	Misconfigurations []trivyMisconf       `json:"Misconfigurations"`
-}
-
-type trivyVulnerability struct {
-	VulnerabilityID  string `json:"VulnerabilityID"`
-	PkgName          string `json:"PkgName"`
-	InstalledVersion string `json:"InstalledVersion"`
-	FixedVersion     string `json:"FixedVersion"`
-	Severity         string `json:"Severity"`
-	Description      string `json:"Description"`
-	PrimaryURL       string `json:"PrimaryURL"`
-	PkgPath          string `json:"PkgPath"`
-	Title            string `json:"Title"`
-}
-
-type trivyMisconf struct {
-	ID          string `json:"ID"`
-	Title       string `json:"Title"`
-	Description string `json:"Description"`
-	Severity    string `json:"Severity"`
-	Resolution  string `json:"Resolution"`
-	StartLine   int    `json:"StartLine"`
-	EndLine     int    `json:"EndLine"`
 }

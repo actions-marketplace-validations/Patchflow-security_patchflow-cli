@@ -1,0 +1,74 @@
+name: Security rule request
+description: Propose a new vulnerability pattern, framework rule, source, sink, or sanitizer.
+title: "[Rule]: "
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing rules and requests for this behavior.
+          required: true
+        - label: All examples are synthetic or public and safe to disclose.
+          required: true
+  - type: input
+    id: ecosystem
+    attributes:
+      label: Language and framework
+      placeholder: Python / FastAPI
+    validations:
+      required: true
+  - type: input
+    id: weakness
+    attributes:
+      label: Weakness classification
+      description: CWE, OWASP category, or a concise vulnerability class.
+      placeholder: CWE-89 SQL Injection
+    validations:
+      required: true
+  - type: textarea
+    id: threat
+    attributes:
+      label: Threat and user impact
+      description: Explain the trust boundary, attacker-controlled input, sink, and realistic impact.
+    validations:
+      required: true
+  - type: textarea
+    id: vulnerable
+    attributes:
+      label: Vulnerable fixture
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: safe
+    attributes:
+      label: Safe control fixture
+      description: Show a sanitizer, safe API, or pattern that must not produce a finding.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed detection contract
+      description: Suggest sources, sinks, sanitizers, file types, severity, message, and limitations.
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: Authoritative references
+      description: Link vendor documentation, a CWE, advisory, or framework security guidance.
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution interest
+      options:
+        - I can open a pull request with rule and fixtures
+        - I can help test a proposed rule
+        - I am requesting maintainer implementation
+    validations:
+      required: true

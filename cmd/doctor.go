@@ -44,7 +44,7 @@ var doctorCmd = &cobra.Command{
 		if report.RemoteURL != "" {
 			fmt.Printf("[OK] Remote configured: %s\n", report.RemoteURL)
 		} else if report.IsGitRepo {
-			fmt.Println("[!]  No remote origin configured")
+			fmt.Println("[--] No remote origin configured (optional; local scans work without one)")
 		}
 
 		// Config checks (B12.8)
@@ -75,6 +75,14 @@ var doctorCmd = &cobra.Command{
 			fmt.Printf("[X]  SARIF output not writable: %s\n", report.SARIFError)
 		}
 
+		// Config round-trip check (B11.5.4 regression guard)
+		fmt.Println("\nConfig round-trip:")
+		if report.ConfigRoundTripOK {
+			fmt.Println("[OK] Unified --config loads via both rulesconfig + customrules")
+		} else {
+			fmt.Printf("[X]  Config round-trip failed: %s\n", report.ConfigRoundTripError)
+		}
+
 		// Embedded scanners
 		fmt.Println("\nEmbedded SAST Scanners (always available, zero installation):")
 		for _, s := range report.EmbeddedScanners {
@@ -96,6 +104,18 @@ var doctorCmd = &cobra.Command{
 			for _, e := range report.Errors {
 				fmt.Printf("  - %s\n", e)
 			}
+		}
+
+		var printedNextSteps bool
+		for _, check := range report.Checks {
+			if check.Status == "pass" || check.Remediation == "" {
+				continue
+			}
+			if !printedNextSteps {
+				fmt.Println("\nNext steps:")
+				printedNextSteps = true
+			}
+			fmt.Printf("  - %s: %s\n", check.Name, check.Remediation)
 		}
 
 		fmt.Printf("\nOverall status: %s\n", report.Status)

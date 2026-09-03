@@ -841,9 +841,10 @@ type SARIFRun struct {
 // SARIFInvocation describes a single invocation of the tool, carrying scan
 // metadata as properties for CI traceability.
 type SARIFInvocation struct {
-	StartTimeUTC string         `json:"startTimeUtc,omitempty"`
-	EndTimeUTC   string         `json:"endTimeUtc,omitempty"`
-	Properties   *SARIFScanMeta `json:"properties,omitempty"`
+	ExecutionSuccessful bool           `json:"executionSuccessful"`
+	StartTimeUTC        string         `json:"startTimeUtc,omitempty"`
+	EndTimeUTC          string         `json:"endTimeUtc,omitempty"`
+	Properties          *SARIFScanMeta `json:"properties,omitempty"`
 }
 
 // SARIFScanMeta is the scan metadata embedded in a SARIF invocation.
@@ -865,21 +866,21 @@ type SARIFTool struct {
 
 // SARIFDriver is the tool driver component.
 type SARIFDriver struct {
-	Name    string       `json:"name"`
-	Version string       `json:"version"`
-	Rules   []SARIFRule  `json:"rules,omitempty"`
+	Name    string      `json:"name"`
+	Version string      `json:"version"`
+	Rules   []SARIFRule `json:"rules,omitempty"`
 }
 
 // SARIFRule describes a single rule that can produce findings. Following the
 // SARIF 2.1.0 spec, shortDescription and fullDescription are message objects
 // with a "text" sub-field, and properties carries rule metadata such as tags.
 type SARIFRule struct {
-	ID               string             `json:"id"`
-	Name             string             `json:"name,omitempty"`
-	ShortDescription *SARIFMessage      `json:"shortDescription,omitempty"`
-	FullDescription  *SARIFMessage      `json:"fullDescription,omitempty"`
-	HelpURI          string             `json:"helpUri,omitempty"`
-	Properties       *SARIFRuleProps    `json:"properties,omitempty"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name,omitempty"`
+	ShortDescription *SARIFMessage   `json:"shortDescription,omitempty"`
+	FullDescription  *SARIFMessage   `json:"fullDescription,omitempty"`
+	HelpURI          string          `json:"helpUri,omitempty"`
+	Properties       *SARIFRuleProps `json:"properties,omitempty"`
 }
 
 // SARIFRuleProps carries rule-level properties (e.g. tags) as defined by the
@@ -950,7 +951,9 @@ type SARIFRegion struct {
 
 // SARIF returns a SARIF 2.1.0 report.
 func (g *Generator) SARIF(toolVersion string) *SARIFReport {
-	var results []SARIFResult
+	// SARIF requires runs[].results to be an array. Keep it non-nil so clean,
+	// empty, and failed scans serialize as [] rather than JSON null.
+	results := make([]SARIFResult, 0)
 
 	if g.Result != nil {
 		for _, f := range g.Result.Findings {
@@ -1013,8 +1016,12 @@ func (g *Generator) SARIF(toolVersion string) *SARIFReport {
 	var invocations []SARIFInvocation
 	if g.Result != nil {
 		invocations = []SARIFInvocation{{
-			StartTimeUTC: g.Result.StartedAt.UTC().Format(time.RFC3339),
-			EndTimeUTC:   g.Result.CompletedAt.UTC().Format(time.RFC3339),
+			// SARIF treats a completed scan with findings (exit 1) as a
+			// successful tool execution. Exit codes 2+ represent execution
+			// failures such as invalid configuration, internal errors, or timeouts.
+			ExecutionSuccessful: g.Result.ExitCode == 0 || g.Result.ExitCode == 1,
+			StartTimeUTC:        g.Result.StartedAt.UTC().Format(time.RFC3339),
+			EndTimeUTC:          g.Result.CompletedAt.UTC().Format(time.RFC3339),
 			Properties: &SARIFScanMeta{
 				ScanID:   g.Result.ScanID,
 				Version:  g.Result.Version,
@@ -1080,8 +1087,8 @@ func (g *Generator) buildSARIFRules() []SARIFRule {
 			short = f.Title
 		}
 		rule := SARIFRule{
-			ID:   rid,
-			Name: f.Title,
+			ID:               rid,
+			Name:             f.Title,
 			ShortDescription: &SARIFMessage{Text: short},
 			HelpURI:          "https://patchflow.dev/docs/rules/" + rid,
 			Properties: &SARIFRuleProps{
